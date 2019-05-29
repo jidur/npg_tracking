@@ -5,7 +5,7 @@ use English qw(-no_match_vars);
 use Perl6::Slurp;
 
 use Test::More tests => 14;
-use Test::Exception::LessClever;
+use Test::Exception;
 
 use t::dbic_util;
 use t::useragent;
@@ -20,7 +20,7 @@ my $dummy_url  = "http://$dummy_cbot.internal.sanger.ac.uk/InstrumentStatus";
 my $user_agent = t::useragent->new( { is_success => 1,
                                       mock       => {
 q{http://cBot1.internal.sanger.ac.uk/InstrumentStatus} => q{t/data/cbot/cBot1/InstrumentStatus.xml},
-q{http://cBot2.internal.sanger.ac.uk/InstrumentStatus} => q{t/data/cbot/cBot2/InstrumentStatus.xml},
+q{http://cBot2/InstrumentStatus} => q{t/data/cbot/cBot2/InstrumentStatus.xml},
                                                     },
                                   } );
 

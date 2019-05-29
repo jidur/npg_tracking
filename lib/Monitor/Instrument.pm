@@ -5,15 +5,15 @@
 package Monitor::Instrument;
 
 use Moose;
-with 'Monitor::Roles::Schema';
-with 'Monitor::Roles::Username';
-with 'MooseX::Getopt';
-
 use Carp;
 use MooseX::StrictConstructor;
 use POSIX qw(strftime);
 
 use npg_tracking::illumina::run::folder::validation;
+
+with 'Monitor::Roles::Schema';
+with 'Monitor::Roles::Username';
+with 'MooseX::Getopt';
 
 our $VERSION = '0';
 
@@ -53,28 +53,16 @@ has _label => (
     lazy_build => 1,
 );
 
-foreach my $attr ( qw( is_gaii is_hiseq is_cbot is_miseq ) ) {
-    has q{_} . $attr => (
-        reader     => $attr,
-        is         => 'ro',
-        isa        => 'Bool',
-        lazy_build => 1,
-    );
-}
-
-
 sub _build__instr_id {
     my ($self) = @_;
     return ( $self->ident() =~ m/^ (\d+) $/msx ) ? ( $1 + 0 ) : undef;
 }
-
 
 #We only need this if instr_id cannot be set from the --ident argument
 sub _build__instr_name {
     my ($self) = @_;
     return ( $self->instr_id() ? undef : $self->ident() );
 }
-
 
 sub _build__db_entry {
     my ($self) = @_;
@@ -100,7 +88,6 @@ sub _build__db_entry {
     return ( $instrument_rs->count() == 1 ) ? $instrument_rs->next() : undef;
 }
 
-
 sub _build__label {
     my ($self) = @_;
 
@@ -108,38 +95,22 @@ sub _build__label {
             $self->db_entry->id_instrument();
 }
 
-
-sub _build__is_gaii {
-    my ($self) = @_;
-
-    return ( $self->db_entry->instrument_format->model() eq 'HK' );
+sub model {
+    my $self = shift;
+    return $self->db_entry->instrument_format->model();
 }
-
-
-sub _build__is_hiseq {
-    my ($self) = @_;
-
-    return ( $self->db_entry->instrument_format->model() eq 'HiSeq' );
-}
-
-
-sub _build__is_miseq {
-    my ($self) = @_;
-
-    return ( $self->db_entry->instrument_format->model() eq 'MiSeq' );
-}
-
-sub _build__is_cbot {
-    my ($self) = @_;
-
-    return ( $self->db_entry->instrument_format->model() eq 'cBot' );
-}
-
 
 sub mysql_time_stamp {
     return strftime( '%F %T', localtime );
 }
 
+sub validate_run_folder {
+    my ( $self, $folder_name ) = @_;
+    return npg_tracking::illumina::run::folder::validation->new(
+        run_folder          => $folder_name,
+        npg_tracking_schema => $self->schema
+    )->check();
+}
 
 no Moose;
 __PACKAGE__->meta->make_immutable();
@@ -151,8 +122,7 @@ __END__
 
 =head1 NAME
 
-Monitor::Instrument - base class for modules that interrogate instruments for run
-information.
+Monitor::Instrument
 
 =head1 VERSION
 
@@ -160,11 +130,12 @@ information.
 
     C<<use Monitor::Instrument;
        my $obj = Monitor::Instrument->new_with_options();
-       warn $obj->is_gaii();>>
+       warn $obj->model();>>
 
 =head1 DESCRIPTION
 
-This is the superclass for npg_tracking's Monitor library.
+Base class for modules that interrogate instruments for run
+information.
 
 This class is written to support various scripts that monitor instruments. The
 scripts should be called with the argument --ident, and optionally, the
@@ -177,28 +148,34 @@ argument --dev
 
 Return a npg_tracking::Schema::Result::Instrument row for an instrument.
 
-=head2 is_gaii
-
-Return a boolean indicating if the instrument is a GA-II model.
-
-=head2 is_hiseq
-
-Return a boolean indicating if the instrument is a HiSeq model.
-
-=head2 is_miseq
-
-Return a boolean indicating if the instrument is a MiSeq model.
-
-=head2 is_cbot
-
-Return a boolean indicating if the instrument is a cBot model.
+=head2 model - instrument model
 
 =head2 mysql_time_stamp
 
 Return the current time in a format that can be inserted into a mysql table.
 
+=head2 validate_run_folder
+
+Check that a run folder name is of an allowed format. Croaks if no run folder
+name is supplied.
 
 =head1 CONFIGURATION AND ENVIRONMENT
+
+=head1 DEPENDENCIES
+
+=over
+
+=item Moose
+
+=item MooseX::Getopt
+
+=item Carp
+
+=item MooseX::StrictConstructor
+
+=item POSIX
+
+=back
 
 =head1 INCOMPATIBILITIES
 
@@ -208,9 +185,9 @@ Return the current time in a format that can be inserted into a mysql table.
 
 John O'Brien, E<lt>jo3@sanger.ac.ukE<gt>
 
-=head1 LICENCE AND COPYRIGHT
+=head1 LICENSE AND COPYRIGHT
 
-Copyright (C) 2010 GRL, by John O'Brien
+Copyright (C) 2015 GRL, by John O'Brien
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by

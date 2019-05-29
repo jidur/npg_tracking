@@ -10,7 +10,6 @@ use npg::util;
 use English qw(-no_match_vars);
 use Carp;
 use Socket;
-use npg::model::cost_group;
 use Readonly;
 
 our $VERSION = '0';
@@ -48,21 +47,6 @@ sub all_tags_assigned_to_type {
 sub dbh_datetime {
   my $self = shift;
   return $self->util->dbh->selectall_arrayref('SELECT NOW()',{})->[0]->[0];
-}
-
-sub dates_of_last_ninety_days {
-  my ($self) = @_;
-  if (!$self->{_dates_of_last_ninety_days}) {
-    $self->{_dates_of_last_ninety_days} = [];
-    my @temp;
-    foreach my $i (0..$NINETY_DAYS) {
-      my $dt = DateTime->now(time_zone => 'floating');
-      $dt->subtract( days=> $i );
-      push @temp, $dt->ymd();
-    }
-    @{$self->{_dates_of_last_ninety_days}} = reverse @temp;
-  }
-  return $self->{_dates_of_last_ninety_days};
 }
 
 sub aspect {
@@ -144,18 +128,6 @@ sub _comp_name_by_host {
   return $comp_name;
 }
 
-sub ajax_array_cost_group_values {
-  my ( $self, $group ) = @_;
-  my $return_string = q{['};
-  $return_string .= join q{','}, @{ npg::model::cost_group->new({
-    util => $self->util(),
-    name => $group,
-  })->group_codes() };
-  $return_string .= q{']};
-
-  return $return_string;
-}
-
 1;
 __END__
 
@@ -206,13 +178,6 @@ runs input through a regex to sanitise that the input has no bad characters - on
 
   my $sSanitisedInput = $oModelSubClass->sanitise_input( $sInput );
 
-=head2 dates_of_last_ninety_days
-
-returns arrayref of the last 90 days, ascending order in format ymd from DateTime
-caches this for reuse
-
-  my $aDateOfLast90Days = $oModelSubClass->dates_of_last_ninety_days();
-
 =head2 location_is_instrument
 
 returns id_instrument if the requesting computer is an instrument currently
@@ -225,12 +190,6 @@ Optionally, can take an instrument object to reduce the need to create one
 A cache is set, so this is a once per request lookup, since it is highly unlikely the requesting instrument is likely to change as we create a page, but the page might need to call this method more than once
 
 Access from the sequencers is via a proxy which sets X-F-F request header
-
-=head2 ajax_array_cost_group_values
-
-returns a string of comma separated cost codes for R&D
-
-  my $sCostCodeList = $oModelSubClass->ajax_array_cost_group_values();
 
 =head1 DIAGNOSTICS
 

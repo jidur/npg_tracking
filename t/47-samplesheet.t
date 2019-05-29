@@ -1,22 +1,93 @@
 use strict;
 use warnings;
-use Test::More tests => 47;
+use Test::More tests => 61;
 use Test::LongString;
 use Test::Exception;
 use File::Slurp;
+use File::Temp qw/tempdir/;
+use File::Path qw/make_path/;
 
 use t::dbic_util;
-local $ENV{dev} = q(wibble); # ensure we're not going live anywhere
+local $ENV{'dev'} = q(wibble); # ensure we're not going live anywhere
+local $ENV{'HOME'} = q(t/);
 
 use_ok('npg::samplesheet');
 
 my $schema = t::dbic_util->new->test_schema();
 local $ENV{NPG_WEBSERVICE_CACHE_DIR} = q(t/data/samplesheet);
 
+my $dir = tempdir( CLEANUP => 1 );
+my @refs = ();
+
+foreach my $r (qw(PhiX/Illumina
+                  Homo_sapiens/NCBI36
+                  Mus_musculus/NCBIm37
+                  Strongyloides_ratti/20100601
+                  Salmonella_pullorum/449_87
+                  Homo_sapiens/1000Genomes
+                  Haemonchus_contortus/V1_21June13
+                  Plasmodium_falciparum/3D7
+                  Bordetella_pertussis/ST24
+                  Mus_musculus/GRCm38
+                  Homo_sapiens/GRCh37_53
+                  Homo_sapiens/CGP_GRCh37.NCBI.allchr_MT)) {
+
+  my $path = "$dir/references/$r/all/fasta";
+  make_path $path;
+  push @refs, $path;
+}
+
+make_path "$dir/references/taxon_ids";
+symlink "../Homo_sapiens", "$dir/references/taxon_ids/9606";
+symlink "NCBI36", "$dir/references/Homo_sapiens/default";
+symlink "Illumina", "$dir/references/PhiX/default";
+
+foreach my $r (@refs) {
+  my $file = "$r/some.fa";
+  open my $fh, '>', $file or die "Cannot write to $file";
+  print $fh 'some ref';
+  close $fh;
+}
+
 {
   my $ss;
   my $result = q();
-  dies_ok { $ss = npg::samplesheet->new(output=>\$result)->process; } 'sample sheet process fails when no run object nor id_run given';
+  lives_ok { $ss = npg::samplesheet->new(repository=>$dir, npg_tracking_schema=>$schema, id_run=>7826, output=>\$result); } 'sample sheet object for dual index';
+  my $expected_result = << 'RESULT_7826';
+[Header],,,,
+Investigator Name,nh4,,,
+Project Name,Mate Pair R%26D,,,
+Experiment Name,7826,,,
+Date,2012-04-03T16:39:48,,,
+Workflow,LibraryQC,,,
+Chemistry,Amplicon,,,
+,,,,
+[Reads],,,,
+75,,,,
+8,,,,
+,,,,
+[Settings],,,,
+,,,,
+[Manifests],,,,
+,,,,
+[Data],,,,
+Sample_ID,Sample_Name,GenomeFolder,Index,Index2,
+4894529,Mouse_test_3kb,C:\Illumina\MiSeq Reporter\Genomes\WTSI_references\Mus_musculus\NCBIm37\all\fasta\,ATCACGTT,ATAAAAAA,
+4894528,Tetse_3kb,C:\Illumina\MiSeq Reporter\Genomes\WTSI_references\PhiX\Illumina\all\fasta\,CGATGTTT,ATTTTTTT,
+4894527,PfIT_454_5kb,C:\Illumina\MiSeq Reporter\Genomes\WTSI_references\Plasmodium_falciparum\3D7\all\fasta\,ACTTGATG,ATCCCCCC,
+4894525,PfIT_Sanger_5kb,C:\Illumina\MiSeq Reporter\Genomes\WTSI_references\Plasmodium_falciparum\3D7\all\fasta\,GATCAGCG,ATGGGGGG,
+4894526,PfIT_SOLiD5500_5kb,C:\Illumina\MiSeq Reporter\Genomes\WTSI_references\Plasmodium_falciparum\3D7\all\fasta\,TAGCTTGT,ATACACGT,
+RESULT_7826
+  $expected_result =~ s/\n/\r\n/smg;
+  lives_ok { $ss->process(); } ' sample sheet generated';
+  is_string($result, $expected_result, 'Dual indexes created');
+}
+
+
+{
+  my $ss;
+  my $result = q();
+  dies_ok { $ss = npg::samplesheet->new( repository=>$dir, output=>\$result)->process; } 'sample sheet process fails when no run object nor id_run given';
 }
 
 my $expected_result_7007 = << 'RESULT_7007';
@@ -44,7 +115,7 @@ $expected_result_7007 =~ s/\n/\r\n/smg;
 {
   my $ss;
   my $result = q();
-  lives_ok { $ss = npg::samplesheet->new(npg_tracking_schema=>$schema, id_run=>7007, output=>\$result); } 'sample sheet object for unplexed paired run';
+  lives_ok { $ss = npg::samplesheet->new(repository=>$dir, npg_tracking_schema=>$schema, id_run=>7007, output=>\$result); } 'sample sheet object for unplexed paired run';
   lives_ok { $ss->process(); } ' sample sheet generated';
   is_string($result, $expected_result_7007);
 }
@@ -52,7 +123,7 @@ $expected_result_7007 =~ s/\n/\r\n/smg;
   my $run = $schema->resultset(q(Run))->find(7007);
   my $ss;
   my $result = q();
-  lives_ok { $ss = npg::samplesheet->new(run=>$run, output=>\$result); } 'sample sheet object from run object - no id_run given';
+  lives_ok { $ss = npg::samplesheet->new(repository=>$dir, run=>$run, output=>\$result); } 'sample sheet object from run object - no id_run given';
   lives_ok { $ss->process(); } ' sample sheet generated';
   is_string($result, $expected_result_7007);
 }
@@ -60,12 +131,12 @@ $expected_result_7007 =~ s/\n/\r\n/smg;
 
 {
   my $ss;
-  lives_ok { $ss = npg::samplesheet->new(npg_tracking_schema=>$schema, id_run=>7007); } 'sample sheet object - no output provided';
+  lives_ok { $ss = npg::samplesheet->new(repository=>$dir, npg_tracking_schema=>$schema, id_run=>7007); } 'sample sheet object - no output provided';
   cmp_ok($ss->output, 'eq', '/nfs/sf49/ILorHSorMS_sf49/samplesheets/wibble/MS0001309-300.csv', 'default output location (with zeroes trimmed appropriately)');
 }
 {
   my $ss;
-  lives_ok { $ss = npg::samplesheet->new(npg_tracking_schema=>$schema, id_run=>7007); } 'sample sheet object - no output provided';
+  lives_ok { $ss = npg::samplesheet->new(repository=>$dir, npg_tracking_schema=>$schema, id_run=>7007); } 'sample sheet object - no output provided';
   my $orig_flowcell_id = $ss->run->flowcell_id;
   $ss->run->flowcell_id(q(MS2000132-500V2));
   cmp_ok($ss->output, 'eq', '/nfs/sf49/ILorHSorMS_sf49/samplesheets/wibble/MS2000132-500V2.csv', 'default output location copes with V2 MiSeq cartirdges/reagent kits');
@@ -74,7 +145,7 @@ $expected_result_7007 =~ s/\n/\r\n/smg;
 {
   my $ss;
   my $result = q();
-  lives_ok { $ss = npg::samplesheet->new(npg_tracking_schema=>$schema, id_run=>6946, output=>\$result); } 'sample sheet object for plexed paired run';
+  lives_ok { $ss = npg::samplesheet->new(repository=>$dir, npg_tracking_schema=>$schema, id_run=>6946, output=>\$result); } 'sample sheet object for plexed paired run';
   my $expected_result = << 'RESULT_6946';
 [Header],,,,
 Investigator Name,mq1,,,
@@ -113,13 +184,13 @@ RESULT_6946
 }
 {
   my $ss;
-  lives_ok { $ss = npg::samplesheet->new(npg_tracking_schema=>$schema, id_run=>6946); } 'sample sheet object - no output provided';
+  lives_ok { $ss = npg::samplesheet->new(repository=>$dir, npg_tracking_schema=>$schema, id_run=>6946); } 'sample sheet object - no output provided';
   cmp_ok($ss->output, 'eq', '/nfs/sf49/ILorHSorMS_sf49/samplesheets/wibble/000000000-A0616.csv', 'default output location')
 }
 {
   my $ss;
   my $result = q();
-  lives_ok { $ss = npg::samplesheet->new(npg_tracking_schema=>$schema, id_run=>7825, output=>\$result); } 'sample sheet object for plexed paired run';
+  lives_ok { $ss = npg::samplesheet->new(repository=>$dir, npg_tracking_schema=>$schema, id_run=>7825, output=>\$result); } 'sample sheet object for plexed paired run';
   my $expected_result = << 'RESULT_7825';
 [Header],,,,
 Investigator Name,nh4,,,
@@ -167,14 +238,15 @@ RESULT_7825
   is (npg::samplesheet::_csv_compatible_value(['d@sea', 'r@see']), 'd@sea r@see', 'value conversion: array concatenated');
   is (npg::samplesheet::_csv_compatible_value({'middle' => 250, 'from' => 200, 'to' => 300,}),
     'from:200 middle:250 to:300', 'value conversion: hash stringified');
-  my $v = npg::samplesheet->new(npg_tracking_schema=>$schema, id_run=>7007);
+  my $v = npg::samplesheet->new(repository=>q(t/data/repos1), npg_tracking_schema=>$schema, id_run=>7007);
   throws_ok {npg::samplesheet::_csv_compatible_value($v)} qr/Do not know how to serialize/, 'error converting an object';
 }
 
 {
   my $ss;
   my $result = q();
-  lives_ok { $ss = npg::samplesheet->new(npg_tracking_schema=>$schema, extend => 1, id_run=>7007, output=>\$result); } 'extended sample sheet object for unplexed paired run';
+  lives_ok { $ss = npg::samplesheet->new(repository=>$dir, npg_tracking_schema=>$schema, extend => 1, id_run=>7007, output=>\$result); } 'extended sample sheet object for unplexed paired run';
+  ok(!$ss->dual_index, 'no dual index');
   lives_ok { $ss->process(); } ' sample sheet generated';
   is_string($result, read_file('t/data/samplesheet/7007_extended.csv'));
 }
@@ -182,7 +254,8 @@ RESULT_7825
 {
   my $ss;
   my $result = q();
-  lives_ok { $ss = npg::samplesheet->new(npg_tracking_schema=>$schema, id_run=>6946, extend => 1, output=>\$result); } 'extended sample sheet object for plexed paired run';
+  lives_ok { $ss = npg::samplesheet->new(repository=>$dir, npg_tracking_schema=>$schema, id_run=>6946, extend => 1, output=>\$result); } 'extended sample sheet object for plexed paired run';
+  ok(!$ss->dual_index, 'no dual index');
   lives_ok { $ss->process(); } ' sample sheet generated';
   is_string($result, read_file('t/data/samplesheet/6946_extended.csv'));
 }
@@ -194,7 +267,7 @@ RESULT_7825
 
   my $ss;
   my $result = q();
-  lives_ok { $ss = npg::samplesheet->new(npg_tracking_schema=>$schema, id_run=>6946, extend => 1, output=>\$result); }
+  lives_ok { $ss = npg::samplesheet->new(repository=>$dir, npg_tracking_schema=>$schema, id_run=>6946, extend => 1, output=>\$result); }
     'extended sample sheet object for unplexed paired 8 lane run with a control lane';
   lives_ok { $ss->process(); } 'sample sheet generated';
   is_string($result, read_file('t/data/samplesheet/1control7libs_extended.csv'));
@@ -207,24 +280,74 @@ RESULT_7825
 
   my $ss;
   my $result = q();
-  lives_ok { $ss = npg::samplesheet->new(npg_tracking_schema=>$schema, id_run=>6946, extend => 1, output=>\$result); }
+  lives_ok { $ss = npg::samplesheet->new(repository=>$dir, npg_tracking_schema=>$schema, id_run=>6946, extend => 1, output=>\$result); }
     'extended sample sheet object for plexed paired 8 lane run';
+  ok(!$ss->dual_index, 'no dual index');
   lives_ok { $ss->process(); } 'sample sheet generated';
   is_string($result, read_file('t/data/samplesheet/8pools_extended.csv'));
 }
 
 {
   local $ENV{NPG_WEBSERVICE_CACHE_DIR} = q[t/data/samplesheet];
-  $ENV{dev} = 'live';
   # assign batch_id for run 11114 - 4 pools 4 libs
   $schema->resultset('Run')->find(6946)->update({batch_id => 23798,});
 
   my $ss;
   my $result = q();
-  lives_ok { $ss = npg::samplesheet->new(npg_tracking_schema=>$schema, id_run=>6946, extend => 1, output=>\$result); }
+  lives_ok { $ss = npg::samplesheet->new(repository=>$dir, npg_tracking_schema=>$schema, id_run=>6946, extend => 1, output=>\$result); }
     'extended sample sheet object for plexed paired run with both pool and library lanes';
+  ok($ss->dual_index, 'dual index from a 16 char first index');
   lives_ok { $ss->process(); } 'sample sheet generated';
   is_string($result, read_file('t/data/samplesheet/4pool4libs_extended.csv'));
+}
+
+{
+  local $ENV{NPG_WEBSERVICE_CACHE_DIR} = q[t/data/samplesheet];
+  $schema->resultset('Run')->find(6946)->update({batch_id => 1,});
+
+  my $ss;
+  my $result = q();
+  lives_ok { $ss = npg::samplesheet->new(repository=>$dir, npg_tracking_schema=>$schema, id_run=>6946, extend => 1, output=>\$result); }
+    'extended sample sheet object for plexed paired run with both pool and library lanes';
+  ok($ss->dual_index, 'dual index from two indexes in LIMs');
+  lives_ok { $ss->process(); } 'sample sheet generated';
+  is_string($result, read_file('t/data/samplesheet/dual_index_extended.csv'));
+}
+
+{
+  # with the mkfastq option we get an extra leading column, Lane
+  my $ss;
+  my $result = q();
+  lives_ok { $ss = npg::samplesheet->new(repository=>$dir, npg_tracking_schema=>$schema, id_run=>7826, mkfastq => 1, output=>\$result); }
+    'sample sheet object mkfastq';
+  my $expected_result = << 'RESULT_mkfastq';
+[Header],,,,,
+Investigator Name,nh4,,,,
+Project Name,Mate Pair R%26D,,,,
+Experiment Name,7826,,,,
+Date,2012-04-03T16:39:48,,,,
+Workflow,LibraryQC,,,,
+Chemistry,Amplicon,,,,
+,,,,,
+[Reads],,,,,
+75,,,,,
+8,,,,,
+,,,,,
+[Settings],,,,,
+,,,,,
+[Manifests],,,,,
+,,,,,
+[Data],,,,,
+Lane,Sample_ID,Sample_Name,GenomeFolder,Index,Index2,
+1,7826_1_ATCACGTTATAAAAAA,7826_1_ATCACGTTATAAAAAA,C:\Illumina\MiSeq Reporter\Genomes\WTSI_references\Mus_musculus\NCBIm37\all\fasta\,ATCACGTT,ATAAAAAA,
+1,7826_1_CGATGTTTATTTTTTT,7826_1_CGATGTTTATTTTTTT,C:\Illumina\MiSeq Reporter\Genomes\WTSI_references\PhiX\Illumina\all\fasta\,CGATGTTT,ATTTTTTT,
+1,7826_1_ACTTGATGATCCCCCC,7826_1_ACTTGATGATCCCCCC,C:\Illumina\MiSeq Reporter\Genomes\WTSI_references\Plasmodium_falciparum\3D7\all\fasta\,ACTTGATG,ATCCCCCC,
+1,7826_1_GATCAGCGATGGGGGG,7826_1_GATCAGCGATGGGGGG,C:\Illumina\MiSeq Reporter\Genomes\WTSI_references\Plasmodium_falciparum\3D7\all\fasta\,GATCAGCG,ATGGGGGG,
+1,7826_1_TAGCTTGTATACACGT,7826_1_TAGCTTGTATACACGT,C:\Illumina\MiSeq Reporter\Genomes\WTSI_references\Plasmodium_falciparum\3D7\all\fasta\,TAGCTTGT,ATACACGT,
+RESULT_mkfastq
+  $expected_result =~ s/\n/\r\n/smg;
+  lives_ok { $ss->process(); } ' sample sheet generated';
+  is_string($result, $expected_result, 'mkfastq created');
 }
 
 1;

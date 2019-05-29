@@ -57,16 +57,16 @@ Readonly::Hash our %DELEGATION      => {
                            sample_description       => 'description',
                      },
     'study'        => {
-                           study_name                   => 'name',
-                           email_addresses              => 'email_addresses',
-                           email_addresses_of_managers  => 'email_addresses_of_managers',
-                           email_addresses_of_followers => 'email_addresses_of_followers',
-                           email_addresses_of_owners    => 'email_addresses_of_owners',
-                           alignments_in_bam            => 'alignments_in_bam',
-                           study_accession_number       => 'accession_number',
-                           study_title                  => 'title',
-                           study_description            => 'description',
-                           separate_y_chromosome_data   => 'separate_y_chromosome_data',
+                           study_name                        => 'name',
+                           email_addresses                   => 'email_addresses',
+                           email_addresses_of_managers       => 'email_addresses_of_managers',
+                           email_addresses_of_followers      => 'email_addresses_of_followers',
+                           email_addresses_of_owners         => 'email_addresses_of_owners',
+                           study_alignments_in_bam           => 'alignments_in_bam',
+                           study_accession_number            => 'accession_number',
+                           study_title                       => 'title',
+                           study_description                 => 'description',
+                           study_separate_y_chromosome_data  => 'separate_y_chromosome_data',
     },
     'project'      => {
                            project_name      => 'name',
@@ -125,6 +125,8 @@ sub _build_npg_api_run {
    }
    return $run_obj;
 }
+
+has 'purpose' => (isa => 'Str', is => 'ro', default => 'standard');
 
 has '_lane_elements' =>   (isa             => 'ArrayRef',
                            is              => 'ro',
@@ -320,22 +322,56 @@ Read-only string accessor, not possible to set from the constructor.
 Undefined on a lane level and for zero tag_index.
 
 =cut
-has 'default_tag_sequence' =>    (isa             => 'Maybe[Str]',
-                          is              => 'ro',
-                          init_arg        => undef,
-                          lazy_build      => 1,
-                         );
+has 'default_tag_sequence' =>  (isa             => 'Maybe[Str]',
+                                is              => 'ro',
+                                init_arg        => undef,
+                                lazy_build      => 1,
+                               );
 sub _build_default_tag_sequence {
   my $self = shift;
+  return $self->_get_tag_sequence('tag_id');
+}
+
+=head2 default_tag2_sequence
+
+Read-only string accessor, not possible to set from the constructor.
+Undefined on a lane level and for zero tag_index.
+
+=cut
+has 'default_tagtwo_sequence' => (isa             => 'Maybe[Str]',
+                                  is              => 'ro',
+                                  init_arg        => undef,
+                                  lazy_build      => 1,
+                                 );
+sub _build_default_tagtwo_sequence {
+  my $self = shift;
+  return $self->_get_tag_sequence('tag2_id');
+}
+
+sub _get_tag_sequence {
+  my ($self, $tag_sequence_name) = @_;
+
+  if (!$tag_sequence_name) {
+    croak 'Need tag sequence element name';
+  }
+
   my $seq;
   if ($self->tag_index) {
-    if (!$seq && $self->_entity_xml_element) {
-      my $sel = $self->_entity_xml_element->getElementsByTagName(q[expected_sequence]);
-      if ($sel) {
-        $seq = $sel->[0]->textContent();
+    if ($self->_entity_xml_element) {
+
+      my @tag_elts = grep { $_->hasAttribute($tag_sequence_name) } $self->_entity_xml_element->getElementsByTagName(q[tag]);
+      if (scalar @tag_elts > 1) {
+        croak "Multiple tag entries for $tag_sequence_name";
+      }
+      if (@tag_elts) {
+        my $sel = $tag_elts[0]->getElementsByTagName(q[expected_sequence]);
+        if ($sel) {
+          $seq = $sel->[0]->textContent();
+        }
       }
     }
   }
+
   return $seq;
 }
 
@@ -962,7 +998,7 @@ Marina Gourtovaia E<lt>mg8@sanger.ac.ukE<gt>
 
 =head1 LICENSE AND COPYRIGHT
 
-Copyright (C) 2011 GRL, by Marina Gourtovaia
+Copyright (C) 2015 GRL
 
 This file is part of NPG.
 

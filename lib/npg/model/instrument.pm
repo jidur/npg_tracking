@@ -19,44 +19,42 @@ use npg::model::annotation;
 use npg::model::instrument_designation;
 use npg::model::designation;
 use DateTime;
+use DateTime::Duration;
+use DateTime::Format::MySQL;
 use List::MoreUtils qw/any/;
 
 our $VERSION = '0';
 
 use Readonly;
-Readonly::Scalar our $HISEQ_INSTR_MODEL => 'HiSeq';
-Readonly::Scalar our $MISEQ_INSTR_MODEL => 'MiSeq';
-Readonly::Scalar our $CBOT_INSTR_MODEL  => 'cBot';
-Readonly::Array  our @FC_SLOT_TAGS    => qw/fc_slotA fc_slotB/;
+
+Readonly::Scalar our $NOVASEQ_INSTR_MODEL => 'NovaSeq';
+Readonly::Scalar our $HISEQ_INSTR_MODEL   => 'HiSeq';
+Readonly::Scalar our $MISEQ_INSTR_MODEL   => 'MiSeq';
+Readonly::Scalar our $CBOT_INSTR_MODEL    => 'cBot';
+Readonly::Array  our @FC_SLOT_TAGS        => qw/fc_slotA fc_slotB/;
 
 Readonly::Array  our @CURRENT_RUNS    => ('run pending', 'run in progress', 'run on hold', 'run complete');
 Readonly::Array  our @BLOCKING_RUNS   => ('run pending', 'run in progress', 'run on hold');
 
 Readonly::Hash my %STATUS_CHANGE_AUTO => {
-  'up' => 'wash required',
+  'up'                  => 'wash required',
   'wash performed'      => 'up',
-  'planned maintenance' => 'down for repair',
   'planned repair'      => 'down for repair',
   'planned service'     => 'down for service',
 };
 
 Readonly::Hash my %STATUS_GRAPH => {
+  'up'               => ['planned service', 'planned repair', 'down for repair', 'wash required', 'wash in progress'],
 
-  'up' => ['planned service', 'planned repair', 'down for repair', 'wash required', 'wash in progress'],
+  'wash required'    => ['wash in progress', 'wash performed', 'planned repair', 'planned service', 'down for repair'],
+  'wash in progress' => ['wash performed', 'planned repair', 'planned service', 'down for repair'],
+  'wash performed'   => ['up', 'wash required', 'down for repair'],
 
-  'request approval' => ['up', 'down for repair', 'down for service', 'planned repair', 'planned service'],
+  'planned repair'   => ['down for repair'],
+  'planned service'  => ['down for service', 'planned repair', 'down for repair'],
 
-  'wash required'  => ['wash in progress', 'wash performed', 'planned repair', 'planned service', 'down for repair'],
-  'wash in progress'   => ['wash performed', 'planned repair', 'planned service', 'down for repair'],
-  'wash performed' => ['up', 'wash required', 'down for repair'],
-
-  'planned maintenance' => ['down for repair'],
-  'planned repair'      => ['down for repair'],
-  'planned service'     => ['down for service', 'planned repair', 'down for repair'],
-
-  'down'             => ['request approval'],
-  'down for repair'  => ['request approval'],
-  'down for service' => ['request approval', 'down for repair'],
+  'down for repair'  => ['wash required'],
+  'down for service' => ['wash required', 'down for repair'],
 };
 
 __PACKAGE__->mk_accessors(fields());
@@ -282,6 +280,20 @@ sub instrument_statuses {
   return $self->{'instrument_statuses'};
 }
 
+sub recent_instrument_statuses {
+  my $self = shift;
+
+  my $earliest = DateTime->now()->subtract(DateTime::Duration->new(years => 1));
+  my @recent = ();
+  foreach my $is (@{$self->instrument_statuses()}) {
+    if (DateTime::Format::MySQL->parse_datetime($is->date()) < $earliest) {
+      last;
+    }
+    push @recent, $is;
+  }
+  return \@recent;
+}
+
 sub current_instrument_mods {
   my $self = shift;
   if(!$self->{current_instrument_mods}) {
@@ -316,15 +328,6 @@ sub current_instrument_status {
   $self->{'current_instrument_status'} = $self->gen_getarray($pkg, $query, $self->id_instrument())->[0];
   return $self->{'current_instrument_status'};
 }
-
-sub utilisation {
-  my ($self, $type) = @_;
-  my $root_is = npg::model::instrument_status->new({
-                                                    util => $self->util(),
-                                                  });
-  return $root_is->utilisation($type);
-}
-
 
 sub latest_instrument_annotation {
   my $self = shift;
@@ -366,22 +369,23 @@ sub latest_annotation {
 
 sub does_sequencing {
   my $self = shift;
-  return ($self->instrument_format->model && $self->instrument_format->model ne $CBOT_INSTR_MODEL);
+  return ($self->instrument_format->model && ($self->instrument_format->model ne $CBOT_INSTR_MODEL));
 }
 
-sub is_hiseq_instrument {
+sub is_two_slot_instrument {
   my $self = shift;
-  return ($self->instrument_format->model && $self->instrument_format->model eq $HISEQ_INSTR_MODEL);
+  return ($self->instrument_format->model &&
+         ($self->instrument_format->model =~ /$HISEQ_INSTR_MODEL|$NOVASEQ_INSTR_MODEL/smx));
 }
 
 sub is_cbot_instrument {
   my $self = shift;
-  return ($self->instrument_format->model && $self->instrument_format->model eq $CBOT_INSTR_MODEL);
+  return ($self->instrument_format->model && ($self->instrument_format->model eq $CBOT_INSTR_MODEL));
 }
 
 sub is_miseq_instrument {
   my $self = shift;
-  return ($self->instrument_format->model && $self->instrument_format->model eq $MISEQ_INSTR_MODEL);
+  return ($self->instrument_format->model && ($self->instrument_format->model eq $MISEQ_INSTR_MODEL));
 }
 
 sub current_run_by_id {
@@ -397,7 +401,7 @@ sub current_run_by_id {
 sub _fc_slots2runs {
   my ($self, $runs_type) = @_;
 
-  if (!$self->is_hiseq_instrument) { return; }
+  if (!$self->is_two_slot_instrument) { return; }
 
   if (!defined $runs_type) {
     croak q[runs type should be defined];
@@ -453,8 +457,7 @@ sub status_to_change_to {
 
   if ($self->does_sequencing) {
     if ( $self->is_idle() &&
-      ($current eq 'planned maintenance' ||
-       $current eq 'planned repair' ||
+      ($current eq 'planned repair' ||
        $current eq 'planned service')) {
         return $next_auto;
     }
@@ -675,13 +678,11 @@ Has a side-effect of updating an instrument's current instrument_status to 'wash
 
   my $arInstrumentStatuses = $oInstrument->instrument_statuses();
 
+=head2 recent_instrument_statuses - arrayref of recent (within a year) npg::model::instrument_statuses for this instrument 
+
 =head2 current_instrument_status - npg::model::instrument_status with iscurrent=1 for this instrument
 
   my $oInstrumentStatus = $oInstrument->current_instrument_status();
-
-=head2 utilisation - fetches npg::model::instrument_status->utilisation(type) where type is hour or day
-
-  my $aUtilisation = $oInstrument->utilisation(type);
 
 =head2 instrument_mods - returns array of instrument modifications for this instrument
 
@@ -700,11 +701,12 @@ Has a side-effect of updating an instrument's current instrument_status to 'wash
   my $oAnnotation = $oInstrument->latest_annotation();
 
 =head2 fc_slots2current_runs - a hash reference mapping instrument flowcell slots to current runs; tags for slots are used as keys
+
 =head2 fc_slots2blocking_runs - a hash reference mapping instrument flowcell slots to blocking runs; tags for slots are used as keys
 
 =head2 does_sequencing - returns true is the instrument does sequencing, false otherwise
 
-=head2 is_hiseq_instrument - returns true if this instrument is HiSeq, false otherwise
+=head2 is_two_slot_instrument - returns true if this instrument has two slots, false otherwise
 
 =head2 is_miseq_instrument
 

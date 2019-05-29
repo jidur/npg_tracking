@@ -13,7 +13,7 @@ our $VERSION = '0';
 Readonly::Scalar our $POSITION_MIN  => 1;
 Readonly::Scalar our $POSITION_MAX  => 9;
 Readonly::Scalar our $TAG_INDEX_MIN => 0;
-Readonly::Scalar our $TAG_INDEX_MAX => 999;
+Readonly::Scalar our $TAG_INDEX_MAX => 9999;
 
 subtype 'NpgTrackingReadableFile'
       => as 'Str'
@@ -90,7 +90,7 @@ Marina Gourtovaia E<lt>mg8@sanger.ac.ukE<gt>
 
 =head1 LICENSE AND COPYRIGHT
 
-Copyright (C) 2013 GRL, by Marina Gourtovaia
+Copyright (C) 2015 GRL
 
 This file is part of NPG.
 

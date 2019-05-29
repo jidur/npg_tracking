@@ -1,11 +1,7 @@
-#########
-# Author:        ajb
-# Created:       2008-04-24
-#
 package npg::view::administration;
+
 use strict;
 use warnings;
-use English qw(-no_match_vars);
 use Carp;
 use base qw(npg::view);
 use npg::model::administration;
@@ -72,7 +68,10 @@ sub create_user {
   if (!$username) {
     croak 'No username given';
   }
-  my $user = npg::model::user->new({util => $util, username => $username});
+  my $user = npg::model::user->new({
+    util      => $util,
+    username  => $username,
+    iscurrent => 1});
   $user->create();
   return;
 }
@@ -88,26 +87,13 @@ sub create_usergroup {
     croak 'No groupname and/or group description given';
   }
   my $usergroup = npg::model::usergroup->new({
-    util => $util,
-    groupname => $groupname,
+    util        => $util,
+    groupname   => $groupname,
     description => $description,
-    is_public => $is_public
+    is_public   => $is_public,
+    iscurrent   => 1
   });
   $usergroup->create();
-  return;
-}
-
-sub create_entity_type {
-  my $self = shift;
-  my $util = $self->util();
-  my $cgi = $util->cgi();
-  my $description = $cgi->param('description');
-  my $iscurrent = $cgi->param('iscurrent');
-  if (!$description) {
-    croak 'No entity type given';
-  }
-  my $et = npg::model::entity_type->new({util => $util, description => $description, iscurrent => $iscurrent});
-  $et->create();
   return;
 }
 
@@ -163,8 +149,6 @@ npg::view::administration
 
 =head2 create_usergroup - handles creation of a new user group
 
-=head2 create_entity_type - handles creation of an entity type
-
 =head2 create_run_status - handles creation of a new run status
 
 =head2 create_user_to_usergroup - handles adding a user to a user group for permissions
@@ -180,8 +164,6 @@ npg::view::administration
 =item strict
 
 =item warnings
-
-=item English
 
 =item Carp
 
@@ -213,11 +195,11 @@ npg::view::administration
 
 =head1 AUTHOR
 
-Roger M Pettett
+Roger M Pettett, Andy Brown, Marina Gourtovaia
 
 =head1 LICENSE AND COPYRIGHT
 
-Copyright (C) 2008 GRL, by Roger Pettett
+Copyright (C) 2017 Genome Research Ltd
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by

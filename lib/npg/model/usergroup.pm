@@ -15,7 +15,7 @@ our $VERSION = '0';
 
 __PACKAGE__->mk_accessors(fields());
 
-sub fields { return qw(id_usergroup groupname is_public description); }
+sub fields { return qw(id_usergroup groupname is_public description iscurrent); }
 
 sub init {
   my $self = shift;
@@ -41,8 +41,8 @@ sub init {
 
 sub usergroups {
   my $self = shift;
-  my $ref  = $self->gen_getall();
-  return $ref;
+  my @current_groups = sort {$a->groupname cmp $b->groupname} grep { $_->iscurrent() } @{$self->gen_getall()};
+  return \@current_groups;
 }
 
 sub public_usergroups {
@@ -62,22 +62,6 @@ sub users {
   }
 
   return $self->{'users'};
-}
-
-sub event_types {
-  my $self = shift;
-
-  if(!$self->{'event_types'}) {
-    my $pkg   = q(npg::model::event_type);
-    my $query = qq(SELECT @{[join q(, ), map { "et.$_" } $pkg->fields()]}
-                   FROM   @{[$pkg->table()]}    et,
-                          event_type_subscriber ets
-                   WHERE  ets.id_usergroup  = ?
-                   AND    ets.id_event_type = et.id_event_type);
-    $self->{'event_types'} = $self->gen_getarray($pkg, $query, $self->id_usergroup());
-  }
-
-  return $self->{'event_types'};
 }
 
 1;
@@ -118,10 +102,6 @@ npg::model::usergroup - data model for user groups
 =head2 users - arrayref of npg::model::user members of this group
 
   my $arUsers = $oUsergroup->users();
-
-=head2 event_types - arrayref of npg::model::event_types to which this user group is subscribed
-
-  my $arEventTypes = $oUsergroup->event_types();
 
 =head1 DIAGNOSTICS
 

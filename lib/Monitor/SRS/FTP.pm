@@ -6,7 +6,7 @@ package Monitor::SRS::FTP;
 
 use Moose;
 use Monitor::RunFolder;
-extends 'Monitor::SRS';
+extends 'Monitor::Instrument';
 
 use Carp;
 use English qw(-no_match_vars);
@@ -110,22 +110,6 @@ sub get_latest_cycle {
     croak 'Run folder address required as argument' if !$run_path;
 
 
-    my $events_latest = 0;
-    my $log_file = "$run_path/Events.log";
-    my $log_text = q{};
-    eval { $log_text < io($log_file); 1 } or do {};
-
-    foreach ( reverse split m/={35,}/msx, $log_text ) {
-
-        # This is a recognised bug in Perl::Critic
-        ## no critic (RegularExpressions::ProhibitCaptureWithoutTest)
-        next if $_ !~ m/ ^ Cycle[ ]Number \s+ = [ ] (\d+) \s* $ /msx;
-        $events_latest = $1;
-        last;
-        ## use critic
-    }
-
-
     my $status_latest = 0;
     my $status_file = "$run_path/Data/reports/StatusUpdate.xml";
     my $status_text = q{};
@@ -136,19 +120,19 @@ sub get_latest_cycle {
     }
 
 
-    my $image_ls   = io( qq{$run_path/Processed/L001} )->all();
-    my $process_ls = io( qq{$run_path/Images/L001} )->all();
+    my $process_ls   = io( qq{$run_path/Processed/L001} )->all();
     my $intensities_ls = io( qq{$run_path/Data/Intensities/L001} )->all();
+    my $basecalls_ls = io( qq{$run_path/Data/Intensities/BaseCalls/L001} )->all();
 
-    my @cycle_dirs = ( $self->all_dirs($image_ls),
-                       $self->all_dirs($process_ls),
-                       $self->all_dirs($intensities_ls)
+    my @cycle_dirs = ( $self->all_dirs($process_ls),
+                       $self->all_dirs($intensities_ls),
+                       $self->all_dirs($basecalls_ls)
     );
 
     my $dirs_latest = max( 0, map { m{\bC(\d+)[.]1}msx } @cycle_dirs );
 
 
-    my $latest_cycle = max( $events_latest, $status_latest, $dirs_latest );
+    my $latest_cycle = max( $status_latest, $dirs_latest );
 
     $latest_cycle
         ? $self->update_latest_contact()
@@ -165,10 +149,10 @@ sub is_run_completed {
 
     my $root_list;
 
-    eval { 
-      $root_list  = io($run_path)->all(); 
+    eval {
+      $root_list  = io($run_path)->all();
       $root_list .= "\n";
-      $root_list .= io("$run_path/Data")->all(); 
+      $root_list .= io("$run_path/Data")->all();
       1; }
         or do { carp $EVAL_ERROR; return 0; };
 
@@ -183,27 +167,8 @@ sub is_run_completed {
       return 1;
     }
 
-    my $run_folder = Monitor::RunFolder->new( runfolder_path => $run_path, _schema=>$self->schema );
-
-    my $netcopy = 'ImageAnalysis_Netcopy_complete_Read'.scalar $run_folder->read_cycle_counts;
-
-    return ( $root_list =~ m/\b$netcopy [.]txt\b/msx ) ? 1
-         :                                                        0
-         ;
-}
-
-
-sub is_rta {
-    my ( $self, $run_path ) = @_;
-
-    croak 'Run folder not supplied' if !$run_path;
-
-    my $rta_test = io( "$run_path/Data/" )->all();
-    return if !$rta_test;
-
-    $self->update_latest_contact();
-
-    return scalar @{ [ $rta_test =~ m/Intensities/gmsx ] };
+    my $rta = "RTAComplete";
+    return ( $root_list =~ m/\b$rta [.]txt\b/msx ) ? 1 : 0;
 }
 
 
@@ -259,7 +224,7 @@ read sequencer via FTP.
 =head1 SYNOPSIS
 
     C<<use Monitor::SRS::FTP;
-       my $ftp_poll = Monitor::SRS::FTP->new_with_options();    
+       my $ftp_poll = Monitor::SRS::FTP->new_with_options();
        croak 'Host not reachable' unless $ftp_poll->can_contact();
 
        # Get a list of non-test, non-repeat run paths on the machine.
@@ -312,12 +277,6 @@ number of the run.
 Look for the flag that indicates that a run is finished. Requires the run
 path as its sole argument. Returns 1 if the flag is found, 0 otherwise.
 
-=head2 is_rta
-
-Return true if the run is a 'real time analysis' run. The test is whether a
-subdirectory, 'Data/Intensities', exists in the runfolder.
-
-
 =head2 update_latest_contact
 
 A private method. Update the 'latest_contact' field in the database
@@ -333,6 +292,25 @@ of all subdirectories found there.
 
 =head1 CONFIGURATION AND ENVIRONMENT
 
+=head1 DEPENDENCIES
+
+=over
+
+=item Moose
+
+=item Carp
+
+=item English
+
+=item IO::All
+
+=item IO::All::FTP
+
+=item List::Util
+
+=item Readonly
+
+=back
 
 
 =head1 INCOMPATIBILITIES
@@ -347,7 +325,7 @@ of all subdirectories found there.
 
 John O'Brien, E<lt>jo3@sanger.ac.ukE<gt>
 
-=head1 LICENCE AND COPYRIGHT
+=head1 LICENSE AND COPYRIGHT
 
 Copyright (C) 2010 GRL, by John O'Brien
 

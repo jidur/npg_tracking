@@ -1,64 +1,88 @@
-#!/usr/local/bin/perl -T
-#########
-# Author:        rmp
-# Created:       2006-10-31
-# copied from: svn+ssh://svn.internal.sanger.ac.uk/repos/svn/new-pipeline-dev/sflogin_web_apps/trunk/cgi-bin/locate_runfolder, r16013
-#
+#!/usr/bin/env perl -T
+
 use strict;
 use warnings;
 use English qw(-no_match_vars);
 use Carp;
+use CGI qw(:standard);
+use URI::Escape qw(uri_unescape uri_escape);
 
 main();
-0;
+
+exit 0;
+
+sub _error {
+  my ($message, $path) = @_;
+  carp "$message for $path";
+  # Path might contain anything, do not write it
+  # back to the page.
+  print "Content-type: text/html\n\n",
+        "<html><head></head><body>\n",
+        "<h2>NPG Tracking Server Error</h2>\n",
+        "<h3>$message</h3>\n",
+        "</body></html>\n"
+     or croak "Error printing: $ERRNO";
+  return;
+}
+
+sub _script_name {
+  my $name = $PROGRAM_NAME;
+  ($name) = $name =~ m{([^/?]+)\Z}smx;
+  return $name;
+}
 
 sub main {
-  my ($pathglob,$runfolder, $suffix) = $ENV{PATH_INFO} =~ m{\A((?:/\S+?/\*)?)/([^/?]+)(.*)}smx;
-  my ($id_run);
-  my @folders;
-  if(not $runfolder=~/\A\d+\z/smx){
-    ($id_run)  = $runfolder =~ /_(\d+)/smx;
-    if ($pathglob) {
-      @folders   = sort { -M $a <=> -M $b } glob "$pathglob/$runfolder";
-    } else {
-      @folders   = sort { -M $a <=> -M $b } glob "/staging/IL*/*/$runfolder";
-    }
-  } else{
-    ($id_run)  = $runfolder;
-    @folders   = sort { -M $a <=> -M $b } glob "/staging/IL*/*/*_{,0}$id_run";
-  }
 
-  if($ENV{QUERY_STRING} =~ /redir/msx) {
-    my ($uri)     = $folders[0]=~/([\/a-z0-9_-]+)/imsx; # detaint
+  my $path_info = uri_unescape(CGI->new()->url(-relative => 1, -path_info => 1));
 
-    my $rellink = readlink "$uri/Latest_Summary";
+  # Depending on how the CGI script is being run, the name of this script
+  # might be prepended to $path_info. When the script is run under the
+  # Apache httpd server, this depends on whether mod-rewrite is enabled
+  # in the server, the version of the server and the history of its updates.
+  my $script_name = _script_name();
+  my ($pathglob, $runfolder, $suffix) = $path_info =~
 
-    if($uri) {
-      if($ENV{PATH_INFO} =~ /latest|summary/msx) {
-	if($rellink =~ m/GERALD/smx){
-	  $uri .= q(/) . $rellink . q(/Summary.htm);
-        }else{
-          $rellink =~ s!((?:/B(?:ustard|aseCalls)|_basecalls)[^/]*)/.*!$1!xms;
-	  $uri .= q(/) . $rellink . q(/BustardSummary.xml);
-	}
-      } elsif($ENV{PATH_INFO} =~ /ivc/msix) {
-        $rellink =~ s!((?:/B(?:ustard|aseCalls)|_basecalls)[^/]*)/.*!$1!xms;
-	$uri .= q(/) . $rellink . q(/IVC.htm);
-      } elsif($ENV{PATH_INFO} =~ /error/msix) {
-	$uri .= q(/) . $rellink . q(/Error.htm);
-      } else {
-        if(defined $rellink) { $suffix =~ s{^/Latest_Summary}{/$rellink}smx; }
-	$uri .= q(/) . $suffix;
-      }
-    }
+    m{ \A(?:(?:.+/)?$script_name)? # Optionally, the name of this script,
+                                   # optionally prepended by some url,
+                                   # neither of which we need to capture.
+       /?                  # An occasional extra slash
+       ((?:/\S+?/\*)?)     # Run folder path glob.
+       /
+       ([^/?]+)            # Run folder name.
+       (.*) }smx;
 
-    print "Content-type: text/html\n\n",
-          qq(<html><head><meta http-equiv="refresh" content="0;url=$uri" /></head></html>\n) or croak "Error printing: $ERRNO";
+  if (!($pathglob && $runfolder)) {
+    _error('Failed to get pathglob or run folder or both', $path_info);
     return;
   }
 
-  print "Content-type: text/xml\n\n",
-        qq(<run id_run="$id_run">@{[map { qq(<folder path="$_" />) } @folders]}</run>\n) or croak "Error printing: $ERRNO";
+  my @folders = sort { -M $a <=> -M $b } glob "$pathglob/$runfolder";
+  if (!@folders) {
+    _error('Run folder not found', $path_info);
+    return;
+  }
+
+  my ($uri)  = $folders[0]=~/([\/a-z0-9_-]+)/imsx; # detaint
+  if (!$uri) {
+    _error('Detainting has not left anything', $path_info);
+    return;
+  }
+
+  my $rellink = readlink "$uri/Latest_Summary";
+  if (defined $rellink) {
+    $suffix =~ s{^/Latest_Summary}{/$rellink}smx;
+  }
+
+  my $UNSAFE = q[#];
+  $uri .= q(/) . uri_escape($suffix,$UNSAFE);
+  if ($uri =~ /tileviz$/smx && !-e $uri) {
+    # Path for old-style run folders
+    $uri =~ s{/tileviz$}{/qc/tileviz}smx;
+  }
+
+  print "Content-type: text/html\n\n",
+    qq(<html><head><meta http-equiv="refresh" content="0;url=$uri" /></head></html>\n)
+    or croak "Error printing: $ERRNO";
 
   return;
 }

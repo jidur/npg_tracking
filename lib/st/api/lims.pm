@@ -1,24 +1,16 @@
-#######
-# Author:        Marina Gourtovaia
-# Created:       July 2013
-#
-
 package st::api::lims;
 
 use Carp;
-use English qw(-no_match_vars);
 use Moose;
-use MooseX::StrictConstructor;
 use MooseX::Aliases;
+use Moose::Meta::Class;
+use namespace::autoclean;
 use Readonly;
-use List::MoreUtils qw/none/;
+use List::MoreUtils qw/any none uniq each_arrayref/;
+use Class::Load qw/load_class/;
 
 use npg_tracking::util::types;
-
-with qw/  npg_tracking::glossary::run
-          npg_tracking::glossary::lane
-          npg_tracking::glossary::tag
-       /;
+use npg_tracking::glossary::rpt;
 
 our $VERSION = '0';
 
@@ -28,35 +20,73 @@ st::api::lims
 
 =head1 SYNOPSIS
 
- $lims = st::api::lims->new(id_run => 333) #run (batch) level object
- $lims = st::api::lims->new(batch_id => 222) # as above
- $lims = st::api::lims->new(batch_id => 222, position => 3) # lane level object
- $lims = st::api::lims->new(id_run => 333, position => 3, tag_index => 44) # plex level object
+ $lims = st::api::lims->new(id_run => 333);   #run (batch) level object
+ $lims = st::api::lims->new(batch_id => 222); # as above
+ $lims = st::api::lims->new(batch_id => 222, position => 3); # lane level object
+ $lims = st::api::lims->new(id_run => 333, position => 3, tag_index => 44); # plex level object
+ $lims = st::api::lims->new(rpt_list => '333:3:44'); # object for a one-component composition
+ $lims = st::api::lims->new(rpt_list => '333:3:44;333:4:44;'); # object for a two-component composition
+ $lims = st::api::lims->new(driver_type => q(ml_warehouse), flowcell_barcode => q(HTC3HADXX),
+                            position => 2, tag_index => 40); # plex level object from ml_warehouse
+ $lims = st::api::lims->new(driver_type => q(ml_warehouse), flowcell_barcode => q(HTC3HADXX),
+                            position => 2, tag_index => 40, mlwh_schema=>$suitable_dbic_schema);
 
 =head1 DESCRIPTION
 
 Generic NPG pipeline oriented LIMS wrapper capable of retrieving data from multiple sources
-(drivers).
+(drivers). Provides methods performing "business" logic independent of data source.
+
+Note the set of valid arguments to the constructor are a function of the driver_type passed.
+
+Any driver attribute can be passed through to the driver's constructor via this objects's
+constructor. Not all of the attributes passed through to the driver will be available
+as this object's accessors. Example:
+
+ $lims = st::api::lims->new(
+                             id_flowcell_lims => 34567,
+                             position         => 5,
+                             driver_type      => 'ml_warehouse',
+                             iseq_flowcell    => $iseq_flowcell
+                           );
+ print $lims->position();         # 5
+ print $lims->id_flowcell_lims(); # 34567
+ print $lims->driver_type;        # ml_warehouse
+ print $lims->iseq_flowcell();    # ERROR
 
 =head1 SUBROUTINES/METHODS
 
 =cut
 
-Readonly::Scalar my  $CACHED_SAMPLESHEET_FILE_VAR_NAME => 'NPG_CACHED_SAMPLESHEET_FILE';
+Readonly::Scalar our $CACHED_SAMPLESHEET_FILE_VAR_NAME => 'NPG_CACHED_SAMPLESHEET_FILE';
+Readonly::Scalar my $DEFAULT_DRIVER_TYPE              => 'xml';
+Readonly::Scalar my $SAMPLESHEET_DRIVER_TYPE          => 'samplesheet';
 
-Readonly::Scalar my  $PROC_NAME_INDEX   => 3;
-Readonly::Hash   my  %QC_EVAL_MAPPING   => {'pass' => 1, 'fail' => 0, 'pending' => undef, };
-Readonly::Scalar my  $INLINE_INDEX_END  => 10;
+Readonly::Scalar my $PROC_NAME_INDEX       => 3;
+Readonly::Hash   my %QC_EVAL_MAPPING       => {'pass' => 1, 'fail' => 0, 'pending' => undef, };
+Readonly::Scalar my $INLINE_INDEX_END      => 10;
+Readonly::Scalar my $DUAL_INDEX_TAG_LENGTH => 16;
 
-Readonly::Hash   my  %METHODS           => {
+Readonly::Hash   my  %METHODS_PER_CATEGORY => {
+    'primary'    =>   [qw/ tag_index
+                           position
+                           id_run
+                           path
+                           id_flowcell_lims
+                           batch_id
+                           flowcell_barcode
+                           rpt_list
+                      /],
 
     'general'    =>   [qw/ spiked_phix_tag_index
-                           is_control
                            is_pool
+                           is_control
                            bait_name
                            default_tag_sequence
+                           default_tagtwo_sequence
                            required_insert_size_range
                            qc_state
+                           purpose
+                           gbs_plex_name
                       /],
 
     'lane'         => [qw/ lane_id
@@ -78,6 +108,9 @@ Readonly::Hash   my  %METHODS           => {
                            sample_consent_withdrawn
                            sample_description
                            sample_reference_genome
+                           sample_supplier_name
+                           sample_cohort
+                           sample_donor_id
                       /],
 
     'study'        => [qw/ study_id
@@ -86,14 +119,14 @@ Readonly::Hash   my  %METHODS           => {
                            email_addresses_of_managers
                            email_addresses_of_followers
                            email_addresses_of_owners
-                           alignments_in_bam
+                           study_alignments_in_bam
                            study_accession_number
                            study_title
                            study_description
                            study_reference_genome
                            study_contains_nonconsented_xahuman
                            study_contains_nonconsented_human
-                           separate_y_chromosome_data
+                           study_separate_y_chromosome_data
                       /],
 
     'project'      => [qw/ project_id
@@ -101,88 +134,205 @@ Readonly::Hash   my  %METHODS           => {
                            project_cost_code
                       /],
 
-    'request'      => [qw/ request_id
-                      /],
+    'request'      => [qw/ request_id /],
 };
 
-Readonly::Array  my @IMPLEMENTED_DRIVERS => qw/xml samplesheet/;
-Readonly::Array our @DELEGATED_METHODS => sort map { @{$_} } values %METHODS;
+Readonly::Array my @METHODS             => sort map { @{$_} } values %METHODS_PER_CATEGORY;
+Readonly::Array my @DELEGATED_METHODS   => sort map { @{$METHODS_PER_CATEGORY{$_}} }
+                                             grep {$_ ne 'primary'} keys %METHODS_PER_CATEGORY;
+
+has '_driver_arguments' => (
+                        isa      => 'HashRef',
+                        is       => 'ro',
+                        init_arg => undef,
+                        writer   => '_set__driver_arguments',
+                        default  => sub { {} },
+);
+
+has '_primary_arguments' => (
+                        isa      => 'HashRef',
+                        is       => 'ro',
+                        init_arg => undef,
+                        writer   => '_set__primary_arguments',
+                        default  => sub { {} },
+);
+
+=head2 BUILD
+
+Custom post construction method to help propagate varied arguments to driver constructors
+
+=cut
+sub BUILD {
+  my $self = shift;
+  my %args = %{shift||{}};
+  delete $args{'driver'}; # better not to have this extra reference
+  $self->_set__driver_arguments(\%args);
+  my %dargs=();
+  my %pargs=();
+  my %primary_arg_type = map {$_ => 1} @{$METHODS_PER_CATEGORY{'primary'}};
+
+  my $driver_class=$self->_driver_package_name;
+
+  foreach my$k (grep {defined && $_ !~ /^_/smx} map{ $_->has_init_arg ? $_->init_arg : $_->name}
+                $driver_class->meta->get_all_attributes) {
+    if(exists $args{$k}){
+      $dargs{$k}=$args{$k};
+      if ( not $primary_arg_type{$k} ){ #allow caching of primary args later even if driver provides methods - important for when passing tag_index=>0 and a lane level lims driver object to constructor
+        delete $args{$k};
+      }
+    }
+  }
+  $self->_set__driver_arguments(\%dargs);
+
+  foreach my$k (grep {defined} map{$_->has_init_arg ? $_->init_arg : $_->name}
+      __PACKAGE__->meta->get_all_attributes) {
+    delete $args{$k};
+  }
+
+  #only allow primary args - to recreate Strictness of constructor
+  foreach my$k( @{$METHODS_PER_CATEGORY{'primary'}} ) {
+    if(exists $args{$k}) {
+      $pargs{$k}=$args{$k};
+      delete $args{$k};
+    }
+  }
+  croak 'Unknown attributes: '.join q(, ), keys %args if keys %args;
+  $self->_set__primary_arguments(\%pargs);
+  return;
+}
+
+# Mapping of LIMS object types to attributes for which methods are to
+# be generated. These generated methods are 'plural' methods which
+# return an array of that attributes e.g. $lims->library_ids (returns
+# an array of library_id values), $lims->sample_public_names (returns
+# an array of of sample_public_name values).
+Readonly::Hash my %ATTRIBUTE_LIST_METHODS => {
+    'library'      => [qw/ id
+                           name
+                         /],
+    'project'      => [qw/ id
+
+                         /],
+    'sample'       => [qw/ accession_number
+                           cohort
+                           common_name
+                           donor_id
+                           id
+                           name
+                           public_name
+                           supplier_name
+                         /],
+    'study'        => [qw/ accession_number
+                           id
+                           name
+                           title
+                         /]
+};
+
+foreach my $object_type (keys %ATTRIBUTE_LIST_METHODS) {
+  foreach my $property (@{$ATTRIBUTE_LIST_METHODS{$object_type}}) {
+    my $attr_name   = join q[_], $object_type, $property;
+    my $method_name = $attr_name . q[s];
+
+    my $method_body = sub {
+      my ($self, $with_spiked_control) = @_;
+      return $self->_list_of_attributes($attr_name, $with_spiked_control);
+    };
+
+    __PACKAGE__->meta->add_method($method_name, $method_body);
+  }
+}
 
 =head2 driver_type
 
 Driver type (xml, etc), currently defaults to xml
 
 =cut
-has 'driver_type' => (
-                        isa     => 'Str',
-                        is      => 'ro',
-                        lazy_build => 1,
+has 'driver_type' => ( isa        => 'Str',
+                       is         => 'ro',
+                       lazy_build => 1,
+                       writer     => '_set_driver_type',
                      );
 sub _build_driver_type {
   my $self = shift;
-  my $cached_path = $ENV{$CACHED_SAMPLESHEET_FILE_VAR_NAME};
-  if ($self->_has_path || ($cached_path && -f $cached_path)) {
-    if (!$self->_has_path) {
-      $self->_set_path($cached_path);
-      $self->clear_batch_id();
-    }
-    return $IMPLEMENTED_DRIVERS[1];
+  if($self->has_driver && $self->driver){
+    my $type = ref $self->driver;
+    my $prefix = __PACKAGE__ . q(::);
+    $type =~ s/\A\Q$prefix\E//smx;
+    return $type;
   }
-  return $IMPLEMENTED_DRIVERS[0];
+
+  if ($ENV{$CACHED_SAMPLESHEET_FILE_VAR_NAME}) {
+    return $SAMPLESHEET_DRIVER_TYPE;
+  }
+
+  return $DEFAULT_DRIVER_TYPE;
 }
 
 =head2 driver
 
-Driver object (xml, warehouse, samplesheet)
+Driver object (xml, warehouse, mlwarehouse, samplesheet ...)
 
 =cut
-has 'driver' => (
-                          'is'      => 'ro',
-                          'lazy'    => 1,
-                          'builder' => '_build_driver',
-);
+has 'driver' => ( 'isa'       => 'Maybe[Object]',
+                  'is'        => 'ro',
+                  'lazy'      => 1,
+                  'builder'   => '_build_driver',
+                  'predicate' => 'has_driver',
+                );
 sub _build_driver {
   my $self = shift;
-  my $d_package = $self->_driver_package_name;
-  ##no critic (ProhibitStringyEval)
-  eval "require $d_package" or croak "Error loading package $d_package: " . $EVAL_ERROR;
-  ##use critic
-  my $ref = {};
-  foreach my $attr (qw/tag_index position id_run path/) {
-    if (defined $self->$attr) {
-      $ref->{$attr} = $self->$attr;
-    }
-    if ($self->has_batch_id) {
-      $ref->{'batch_id'} = $self->batch_id;
-    }
+  if (!$self->_primary_arguments->{'rpt_list'}) {
+    return $self->_driver_package_name()->new($self->_driver_arguments());
   }
-  return $d_package->new($ref);
+  return;
 }
 
 sub _driver_package_name {
   my $self = shift;
-  my $type = $self->driver_type;
-  if (none {$type} @IMPLEMENTED_DRIVERS) {
-    croak qq[Driver type '$type' not implemented.\n Implemented drivers: ] .
-             join q[,], @IMPLEMENTED_DRIVERS;
-  }
-  return join q[::], __PACKAGE__ , $type;
+  my $class = join q[::], __PACKAGE__ , $self->driver_type;
+  load_class($class);
+  return $class;
 }
 
-for my$m ( @DELEGATED_METHODS ){
-  __PACKAGE__->meta->add_method($m, sub{my$d=shift->driver; if( $d->can($m) ){ return $d->$m(@_) } return; });
+for my $m ( @METHODS ){
+  __PACKAGE__->meta->add_method($m, sub{
+    my $l = shift;
+    if(exists $l->_primary_arguments()->{$m}){
+      return $l->_primary_arguments()->{$m};
+    }
+    my $d = $l->driver;
+    my $r = ($d && $d->can($m)) ? $d->$m(@_) : undef;
+    if( defined $r and length $r){ #if method exists and it returns a defined and non-empty result
+      return $d->$m(@_); # call again here in case it returns different info in list context
+    }
+    if($m eq q(is_pool)){ # avoid obvious recursion
+      if($l->_primary_arguments()->{'rpt_list'}){
+        return;
+      }
+      return scalar $l->children;
+    }
+    if(any {$_ eq $m} @{$METHODS_PER_CATEGORY{'primary'}} ){
+      return $r;
+    }
+    if($l->is_pool || $l->is_composition){ # else try any children
+      return $l->_single_attribute($m,0); # 0 to ignore spike
+    }
+    return;
+  });
 }
 
-=head2 inline_index_end
+=head2 inline_index_read
 
-index end
+index read
 
 =cut
 
-has 'inline_index_read' => (isa => 'Maybe[Int]',
-                           is => 'ro',
-                           lazy_build => 1,
-                          );
+has 'inline_index_read' => (isa        => 'Maybe[Int]',
+                            is         => 'ro',
+                            init_arg   => undef,
+                            lazy_build => 1,
+                           );
 
 sub _build_inline_index_read {
   my $self = shift;
@@ -190,10 +340,17 @@ sub _build_inline_index_read {
   return $x[3];  ## no critic (ProhibitMagicNumbers)
 }
 
-has 'inline_index_end' => (isa => 'Maybe[Int]',
-                           is => 'ro',
+has 'inline_index_end' => (isa        => 'Maybe[Int]',
+                           is         => 'ro',
+                           init_arg   => undef,
                            lazy_build => 1,
                           );
+
+=head2 inline_index_end
+
+index end
+
+=cut
 
 sub _build_inline_index_end {
   my $self = shift;
@@ -201,8 +358,15 @@ sub _build_inline_index_end {
   return $x[2];
 }
 
-has 'inline_index_start' => (isa => 'Maybe[Int]',
-                             is => 'ro',
+=head2 inline_index_start
+
+index start
+
+=cut
+
+has 'inline_index_start' => (isa        => 'Maybe[Int]',
+                             is         => 'ro',
+                             init_arg   => undef,
                              lazy_build => 1,
                             );
 
@@ -212,8 +376,13 @@ sub _build_inline_index_start {
   return $x[1];
 }
 
-has 'inline_index_exists' => (isa => 'Bool',
-                              is => 'ro',
+=head2 inline_index_exists
+
+=cut
+
+has 'inline_index_exists' => (isa        => 'Bool',
+                              is         => 'ro',
+                              init_arg   => undef,
                               lazy_build => 1,
                              );
 
@@ -222,8 +391,9 @@ sub _build_inline_index_exists {
   return _tag_sequence_from_sample_description($self->_sample_description) ? 1 : 0;
 }
 
-has '_sample_description' => (isa => 'Maybe[Str]',
-                              is => 'ro',
+has '_sample_description' => (isa        => 'Maybe[Str]',
+                              is         => 'ro',
+                              init_arg   => undef,
                               lazy_build => 1,
                              );
 
@@ -236,52 +406,18 @@ sub _build__sample_description {
   return;
 }
 
-=head2 path
+=head2 is_phix_spike
 
-Samplesheet path
-
-=cut
-has 'path' => (
-                  isa       => 'Str',
-                  is        => 'ro',
-                  required  => 0,
-                  predicate => '_has_path',
-                  writer    => '_set_path',
-              );
-
-=head2 id_run
-
-Run id, optional attribute.
-
-=cut
-has '+id_run'   =>        (required        => 0,);
-
-=head2 position
-
-Position, optional attribute.
-
-=cut
-has '+position' =>        (required        => 0,);
-
-=head2 tag_index
-
-Tag index, optional attribute.
+True for a plex library that is the spiked phiX.
 
 =cut
 
-=head2 batch_id
-
-Batch id, optional attribute.
-
-=cut
-has 'batch_id'  =>        (isa             => 'Maybe[NpgTrackingPositiveInt]',
-                           is              => 'ro',
-                           lazy_build      => 1,
-                          );
-sub _build_batch_id {
+sub is_phix_spike {
   my $self = shift;
-  if ($self->id_run && $self->driver_type eq 'xml') {
-    return $self->driver->batch_id;
+  if ($self->is_composition) {
+    return ($self->children)[0]->is_phix_spike;
+  } elsif (my $ti = $self->tag_index and my $spti = $self->spiked_phix_tag_index) {
+    return $ti == $spti;
   }
   return;
 }
@@ -290,6 +426,7 @@ sub _build_batch_id {
 
 Read-only string accessor, not possible to set from the constructor.
 Undefined on a lane level and for zero tag_index.
+Multiple indexes are concatenated.
 
 =cut
 has 'tag_sequence' =>    (isa             => 'Maybe[Str]',
@@ -299,7 +436,33 @@ has 'tag_sequence' =>    (isa             => 'Maybe[Str]',
                          );
 sub _build_tag_sequence {
   my $self = shift;
-  my $seq;
+  if( @{$self->tag_sequences} ) {
+    return join q[], @{$self->tag_sequences};
+  }
+  return;
+}
+
+=head2 tag_sequences
+
+Read-only array accessor, not possible to set from the constructor.
+Empty array on a lane level and for zero tag_index.
+
+Might return not the index given by LIMs, but the one contained in the
+sample description.
+
+If dual index is used, the array contains two sequences. The secons index
+might come from LIMS or, if LIMs has one long index, it will be split in two.
+
+=cut
+has 'tag_sequences' =>   (isa             => 'ArrayRef',
+                          is              => 'ro',
+                          init_arg        => undef,
+                          lazy_build      => 1,
+                         );
+sub _build_tag_sequences {
+  my $self = shift;
+
+  my ($seq, $seq2);
   if ($self->tag_index) {
     if (!$self->spiked_phix_tag_index || $self->tag_index != $self->spiked_phix_tag_index) {
       if ($self->sample_description) {
@@ -307,10 +470,30 @@ sub _build_tag_sequence {
       }
     }
     if (!$seq) {
-      return $self->default_tag_sequence;
+      $seq = $self->default_tag_sequence;
+      if ($seq && $self->default_tagtwo_sequence) {
+        $seq2 = $self->default_tagtwo_sequence;
+      }
     }
   }
-  return $seq;
+
+  my @sqs = ();
+  if ($seq) {
+    push @sqs, $seq;
+  }
+  if ($seq2) {
+    push @sqs, $seq2;
+  }
+
+  if (scalar @sqs == 1) {
+    if (length($sqs[0]) == $DUAL_INDEX_TAG_LENGTH) {
+      my $tag_length = $DUAL_INDEX_TAG_LENGTH/2;
+      push @sqs, substr $sqs[0], $tag_length;
+      $sqs[0] = substr $sqs[0], 0, $tag_length;
+    }
+  }
+
+  return \@sqs;
 }
 
 =head2 tags
@@ -394,12 +577,17 @@ sub _entity_required_insert_size {
 
 =head2 seq_qc_state
 
- 1 for passes, 0 for failed, undef if the value is not set
+ 1 for passes, 0 for failed, undef if the value is not set.
+
+ This method is deprecated as of 08 March 2016. It should not be used in any
+ new code. The only place where this method is used in production code is
+ the old warehouse loader. Deprecation warning is not appropriate because the
+ old wh loader logs will be flooded.
 
 =cut
 sub  seq_qc_state {
   my $self = shift;
-  my $state = $self->driver->qc_state;
+  my $state = $self->driver ? $self->driver->qc_state : q[];
   if (!defined $state || $state eq '1' || $state eq '0') {
     return $state;
   }
@@ -426,11 +614,36 @@ has 'reference_genome' => (isa             => 'Maybe[Str]',
                           );
 sub _build_reference_genome {
   my $self = shift;
-  my $rg = $self->sample_reference_genome;
+  my $rg = $self->_trim_value($self->sample_reference_genome);
   if (!$rg ) {
-    $rg = $self->study_reference_genome;
+    $rg = $self->_trim_value($self->study_reference_genome);
   }
   return $rg;
+}
+
+sub _trim_value {
+  my ($self, $value) = @_;
+  if ($value) {
+    $value =~ s/^\s+|\s+$//gxms;
+  }
+  $value ||= undef;
+  return $value;
+}
+
+sub _helper_over_pool_for_boolean_build_methods {
+  my ($self,$method) = @_;
+
+  my $cuh = 0;
+  if ($self->position || $self->is_composition) {
+    my @lims =  (($self->is_pool && !$self->tag_index) || $self->is_composition) ? $self->children : ($self);
+    foreach my $l (@lims) {
+      $cuh = $l->$method;
+      if ($cuh) {
+        return 1;
+      }
+    }
+  }
+  return $cuh ? 1 : 0;
 }
 
 =head2 contains_nonconsented_human
@@ -452,17 +665,7 @@ has 'contains_nonconsented_human' => (isa             => 'Bool',
                                      );
 sub _build_contains_nonconsented_human {
   my $self = shift;
-
-  my $cuh = 0;
-  if ($self->position) {
-    my @lims =  ($self->is_pool && !$self->tag_index) ? $self->children : ($self);
-    foreach my $l (@lims) {
-      $cuh = $l->study_contains_nonconsented_human;
-      if ($cuh) { last; }
-    }
-  }
-  if (!$cuh) { $cuh = 0; }
-  return $cuh;
+  return $self->_helper_over_pool_for_boolean_build_methods('study_contains_nonconsented_human');
 }
 
 =head2 contains_nonconsented_xahuman
@@ -483,44 +686,321 @@ has 'contains_nonconsented_xahuman' => (isa             => 'Bool',
                                        );
 sub _build_contains_nonconsented_xahuman {
   my $self = shift;
-
-  my $cuh = 0;
-  if ($self->position) {
-    my @lims =  ($self->is_pool && !$self->tag_index) ? $self->children : ($self);
-    foreach my $l (@lims) {
-      $cuh = $l->study_contains_nonconsented_xahuman;
-      if ($cuh) {
-        return 1;
-      }
-    }
-  }
-  if (!$cuh) { $cuh = 0; }
-  return $cuh;
+  return $self->_helper_over_pool_for_boolean_build_methods('study_contains_nonconsented_xahuman');
 }
 
-has '_cached_children'              => (isa             => 'ArrayRef',
+=head2 any_sample_consent_withdrawn
+
+Read-only accessor, not possible to set from the constructor.
+
+Return true if any sample, when representing a multiple sample scope,
+has had its consent withdrawn, or false otherwise.
+
+=cut
+
+has 'any_sample_consent_withdrawn' => (isa             => 'Bool',
+                                       is              => 'ro',
+                                       init_arg        => undef,
+                                       lazy_build      => 1,
+                                      );
+sub _build_any_sample_consent_withdrawn {
+  my $self = shift;
+  return $self->_helper_over_pool_for_boolean_build_methods
+    ('sample_consent_withdrawn');
+}
+
+=head2 alignments_in_bam
+
+Read-only accessor, not possible to set from the constructor.
+For a library, control on non-zero plex returns the value of the
+contains_nonconsented_xahuman on the relevant study object. For a pool
+or a zero plex returns 1 if any of the studies in the pool
+has study_alignments_in_bam
+
+On a batch level or if no associated study found, returns 0.
+
+=cut
+has 'alignments_in_bam' =>             (isa             => 'Bool',
                                         is              => 'ro',
                                         init_arg        => undef,
                                         lazy_build      => 1,
                                        );
+sub _build_alignments_in_bam {
+  my $self = shift;
+  return $self->_helper_over_pool_for_boolean_build_methods('study_alignments_in_bam');
+}
+
+=head2 separate_y_chromosome_data
+
+Read-only accessor, not possible to set from the constructor.
+For a library, control on non-zero plex returns the value of the
+contains_nonconsented_xahuman on the relevant study object. For a pool
+or a zero plex returns 1 if any of the studies in the pool
+has study_separate_y_chromosome_data
+
+On a batch level or if no associated study found, returns 0.
+
+=cut
+has 'separate_y_chromosome_data' =>    (isa             => 'Bool',
+                                        is              => 'ro',
+                                        init_arg        => undef,
+                                        lazy_build      => 1,
+                                       );
+sub _build_separate_y_chromosome_data {
+  my $self = shift;
+  return $self->_helper_over_pool_for_boolean_build_methods('study_separate_y_chromosome_data');
+}
+
+=head2 children
+
+Method returning a list of st::api::lims objects that are associated with this object
+and belong to the next (one lower) level. An empty list for a non-pool lane and for a plex.
+For a pooled lane contains plex-level objects. On a run level, when the position 
+accessor is not set, returns lane level objects.
+
+=cut
+
+=head2 num_children
+
+Returns the number of children objects, ie the length children list.
+
+=cut
+
+has '_cached_children'              => (isa             => 'ArrayRef[Object]',
+                                        traits          => [ qw/Array/ ],
+                                        is              => 'bare',
+                                        required        => 0,
+                                        init_arg        => undef,
+                                        lazy_build      => 1,
+                                        handles   => {
+                                         'num_children' => 'count',
+                                         'children'     => 'elements',
+                                                     },
+                                       );
 sub _build__cached_children {
   my $self = shift;
+
   my @children = ();
-  if($self->driver->can('children')) {
-    foreach my $c ($self->driver->children) {
-      my $init = {'driver_type' => $self->driver_type, 'driver' => $c};
-      foreach my $attr (qw/id_run position tag_index/) {
-        if(my $attr_value=$self->$attr || ($c->can($attr) ? $c->$attr : undef)) {
-          $init->{$attr}=$attr_value;
+  my @basic_attrs = qw/id_run position tag_index/;
+
+  if ($self->driver) {
+    if($self->driver->can('children')) {
+      foreach my $c ($self->driver->children) {
+        my $init = {'driver_type' => $self->driver_type, 'driver' => $c};
+        foreach my $attr (@basic_attrs) {
+          if(my $attr_value=$self->$attr || ($c->can($attr) ? $c->$attr : undef)) {
+            $init->{$attr}=$attr_value;
+          }
+        }
+        push @children, st::api::lims->new($init);
+      }
+      if($self->driver->can('free_children')) {
+        $self->driver->free_children;
+      }
+    }
+  } else {
+    my $rpt_list = $self->_primary_arguments->{'rpt_list'};
+    if ($rpt_list) {
+      my $package_name = __PACKAGE__ . '::rpt_composition_factory';
+      my $class=Moose::Meta::Class->create($package_name);
+      $class->add_attribute('rpt_list', {isa =>'Str', is=>'ro', required =>1});
+      my $composition = Moose::Meta::Class->create_anon_class(
+        superclasses => [$package_name],
+        roles        => [
+         'npg_tracking::glossary::composition::factory::rpt' =>
+         {'component_class' => 'npg_tracking::glossary::composition::component::illumina'}
+                        ]
+      )->new_object(rpt_list => $rpt_list)->create_composition();
+
+      my @components = $composition->components_list();
+      my $driver_type = $self->driver_type;
+      if ($driver_type eq $SAMPLESHEET_DRIVER_TYPE) {
+        my @unique_ids = uniq map { $_->id_run } @components;
+        if (@unique_ids != 1) {
+          croak qq[Cannot use $SAMPLESHEET_DRIVER_TYPE driver with components from multiple runs];
         }
       }
-      push @children, st::api::lims->new($init);
-    }
-    if($self->driver->can('free_children')) {
-      $self->driver->free_children;
+
+      foreach my $component (@components) {
+        my %init = %{$self->_driver_arguments()};
+        $init{'driver_type'} = $driver_type;
+        foreach my $attr (@basic_attrs) {
+          $init{$attr} = $component->$attr;
+        }
+        push @children, __PACKAGE__->new(\%init);
+      }
     }
   }
   return \@children;
+}
+
+=head2 is_composition
+
+=cut
+
+sub is_composition {
+  my $self = shift;
+  return $self->rpt_list ? 1 : 0;
+}
+
+=head2 aggregate_xlanes
+
+For a run-level st::api::lims object returns a list of st::api::lims
+objects representing aggregated entities. 
+
+Aggregation is performed across all lanes of the lims object, unless
+an explicit list of positions is gived as an argument.
+
+If all lanes are pools, agreggation is performed per tag index (plex)
+and the list contains one or more objects, each one representing a tag
+index (plex). An entry for tag index zero is added as well.
+
+If lanes are libraries, aggregation of these libraries
+is performed and the list contains one object.
+
+It is possible to aggregate one lane, though practically it does not
+make much sense.
+
+List members represent compositions and have rpt_list attribute set.
+
+  my $l = st::api::lims->new(id_run => 44);
+  my $a = $l->aggregate_xlanes();
+  my $a = $l->aggregate_xlanes(qw/2 3/);
+
+Assuming run id 44, for two lanes representing the same pool of four tag
+indexes (1, 2, 3, 4), the list members will have the following values
+of the rpt_list attribute:
+
+  44:1:0;44:2:0
+  44:1:1;44:2:1
+  44:1:2;44:2:2
+  44:1:3;44:2:3
+  44:1:4;44:2:4
+
+The new objects has the same driver settings as the original object.
+
+=cut
+
+sub aggregate_xlanes {
+  my ($self, @positions) = @_;
+
+  if ($self->is_composition || $self->position) {
+    croak 'Not run-level object';
+  }
+
+  my $lanes_ia = $self->children_ia;
+
+  #####
+  # If a list of positions is given, restrict the operation to
+  # this set of positions.
+  #
+  if (@positions) {
+    my $reduced = {};
+    foreach my $p (@positions) {
+      if (!exists $lanes_ia->{$p}) {
+        croak sprintf 'Requested position %i does not exists in %s',
+                      $p,
+                      $self->to_string();
+      }
+      $reduced->{$p} = $lanes_ia->{$p};
+    }
+    $lanes_ia = $reduced;
+  }
+
+  my @lanes = sort { $a->position <=> $b->position } values %{$lanes_ia};
+  @positions = keys %{$lanes_ia};
+
+  #####
+  # We cannot have a mixture of pools and libraries.
+  #
+  my @pools = grep {$_} map { $_->is_pool ? 1 : 0 } @lanes;
+  if (@pools != 0 && @pools != @lanes) {
+    croak sprintf 'Both pools and libraries in lanes %s in %s',
+                  join(q[, ], @positions),
+                  $self->to_string();
+  }
+
+  #####
+  # Test function. Certain attrubutes should be the same
+  # across all objects of the lims array (first arg.).
+  #  
+  my $can_merge = sub {
+    my ($lims, @attrs) = @_;
+    for my $attr_name (@attrs) {
+      my @values = grep { defined $_ } map { $_->$attr_name } @{$lims};
+      if (@values != @{$lims}) {
+        croak qq[$attr_name is not defined for one of lims objects];
+      }
+      @values = uniq @values;
+      if (@values != 1) {
+        croak qq[$attr_name is not the same across lims objects list];
+      }
+    }
+    return;
+  }; # End of test function
+
+  my %init = %{$self->_driver_arguments()};
+  $init{'driver_type'} = $self->driver_type;
+  delete $init{'id_run'};
+
+  my $lims4compisitions = {};
+  my @test_attrs = qw/sample_id library_id/;
+  my $lanes_rpt_list = npg_tracking::glossary::rpt->deflate_rpts(\@lanes);
+  my @aggregated = ();
+
+  if (!@pools) {
+    $can_merge->(\@lanes, @test_attrs); # Test consistency
+    push @aggregated, __PACKAGE__->new(%init, rpt_list => $lanes_rpt_list);
+  } else {
+    my @sizes = uniq (map { $_->num_children } @lanes);
+    if (@sizes != 1) { # Test consistency
+      croak 'Different number of plexes in lanes';
+    }
+
+    #####
+    # The each_arrayref function is given a list of arrays of plex-level st::api::lims
+    # objects, each array represent all plexes in a lane. The arrays of plexes are ordered
+    # by tag index. The each_arrayref function returns an iterator, which on each invocation
+    # collates and returns a list of first, second, etc, array members in the first, second,
+    # etc, invocation respectively.
+    #
+    my $ea = each_arrayref map { [$_->children()] } @lanes;
+    while ( my @plexes = $ea->() ) {
+      $can_merge->(\@plexes, @test_attrs, 'tag_index');  # Test consistency
+      push @aggregated, __PACKAGE__->new(%init,
+        rpt_list => npg_tracking::glossary::rpt->deflate_rpts(\@plexes));
+    }
+    # Add object for tag zero
+    push @aggregated, __PACKAGE__->new(%init,
+      rpt_list => npg_tracking::glossary::rpt->tag_zero_rpt_list($lanes_rpt_list));
+  }
+
+  return @aggregated;
+}
+
+=head2 create_tag_zero_object
+ 
+Using id_run and position values of this object, creates and returns
+st::api::lims object for tag zero. The new object has the same driver
+settings as the original object.
+
+  my $l = st::api::lims->new(id_run => 4, position => 3);
+  my $t0_lims = $l->create_tag_zero_object();
+
+  my $l = st::api::lims->new(id_run => 4, position => 3, tag_index => 6);
+  my $t0_lims = $l->create_tag_zero_object();
+
+=cut
+
+sub create_tag_zero_object {
+  my $self = shift;
+  if (!defined $self->position) {
+    croak 'Position should be defined';
+  }
+  my %init = %{$self->_driver_arguments()};
+  $init{'driver_type'} = $self->driver_type;
+  $init{'tag_index'}   = 0;
+  return __PACKAGE__->new(%init);
 }
 
 =head2 cached_samplesheet_var_name
@@ -532,19 +1012,6 @@ a samplesheet driver is used by this class.
 =cut
 sub cached_samplesheet_var_name {
   return $CACHED_SAMPLESHEET_FILE_VAR_NAME;
-}
-
-=head2 children
-
-Method returning a list of st::api::lims objects that are associated with this object
-and belong to the next (one lower) level. An empty list for a non-pool lane and for a plex.
-For a pooled lane contains plex-level objects. On a run level, when the position 
-accessor is not set, returns lane level objects.
-
-=cut
-sub children {
-  my $self = shift;
-  return @{$self->_cached_children};
 }
 
 =head2 descendants
@@ -594,7 +1061,12 @@ sub children_ia {
   my $self = shift;
   my $h = {};
   foreach my $alims ($self->children) {
-    my $key = $alims->tag_index ? $alims->tag_index : $alims->position;
+    my $key;
+    if ($self->rpt_list) {
+      $key = npg_tracking::glossary::rpt->deflate_rpt($alims);
+    } else {
+      $key = $alims->tag_index ? $alims->tag_index : $alims->position;
+    }
     $h->{$key} = $alims;
   }
   return $h;
@@ -627,44 +1099,42 @@ The same as children_ia. Retained for backward compatibility
 =cut
 *associated_child_lims_ia = \&children_ia; #backward compat
 
-sub _list_of_properties {
-  my ($self, $prop, $object_type, $with_spiked_control) = @_;
-
-  if ($object_type !~ /^library|sample|study|project$/smx) {
-    croak qq[Invalid object type $object_type in ] . ( caller 0 )[$PROC_NAME_INDEX];
+sub _list_of_attributes {
+  my ($self, $attr_name, $with_spiked_control) = @_;
+  my @l = ();
+  my $is_composition = $self->is_composition;
+  if (!defined $self->position && !$is_composition) {
+    return @l;
   }
-  if ($prop !~ /^name|id$/smx) {
-    croak qq[Invalid property $prop in ] . ( caller 0 )[$PROC_NAME_INDEX]
-  }
-
-  if (!defined $self->position) { my @l = (); return @l; }
 
   if (!defined $with_spiked_control) { $with_spiked_control = 1; }
-  my $attr_name = join q[_], $object_type, $prop;
+  my $pool_or_composition = $self->is_pool || $is_composition;
+  my $list_method_name = $attr_name . q[s];
 
-  my @objects = ();
-  if ($self->is_pool) {
-    foreach my $tlims ($self->children) {
-      if (!$with_spiked_control && $self->spiked_phix_tag_index && $self->spiked_phix_tag_index == $tlims->tag_index) {
-        next;
-      }
-      push @objects, $tlims;
-    }
-  } else {
-    push @objects, $self;
-  }
-
-  my $names_hash = {};
-  foreach my $object (@objects) {
-    if ($object->$attr_name) {
-      $names_hash->{$object->$attr_name} = 1;
-    }
-  }
-
-  my @l = sort keys %{$names_hash};
+  @l = sort {$a cmp $b}
+       uniq
+       grep {defined and length}
+       map {
+         ( $is_composition
+           && (!defined $_->tag_index || $_->tag_index == 0)
+           && $_->can($list_method_name) )
+         ? $_->$list_method_name($with_spiked_control)
+         : $_->$attr_name
+       }
+    $pool_or_composition ?
+    $attr_name ne 'spiked_phix_tag_index' ? # avoid unintended recursion
+      grep { $with_spiked_control || (!$_->is_phix_spike || $is_composition) } $self->children :
+      () :
+    ($self);
   return @l;
 }
 
+sub _single_attribute {
+  my ($self, $attr_name, $with_spiked_control) = @_;
+  my @a = $self->_list_of_attributes($attr_name, $with_spiked_control);
+  if(1==@a) { return $a[0];}
+  return;
+}
 
 =head2 library_names
 
@@ -672,11 +1142,15 @@ A list of library names. if $self->is_pool is true, returns unique library
 names of plex-level objects, otherwise returns object's own library name.
 Takes an optional argument with_spiked_control, wich defaults to true.
 
+
 =cut
-sub library_names {
-  my ($self, $with_spiked_control) = @_;
-  return $self->_list_of_properties(q[name], q[library], $with_spiked_control);
-}
+
+=head2 library_ids
+
+Similar to library_names, but for ids.
+
+=cut
+
 
 =head2 sample_names
 
@@ -685,10 +1159,42 @@ names of plex-level objects, otherwise returns object's own sample name.
 Takes an optional argument with_spiked_control, wich defaults to true.
 
 =cut
-sub sample_names {
-  my ($self, $with_spiked_control) = @_;
-  return $self->_list_of_properties(q[name], q[sample], $with_spiked_control);
-}
+
+
+=head2 sample_cohorts
+
+Similar to sample_names, but for cohorts.
+
+=cut
+
+
+=head2 sample_donor_ids
+
+Similar to sample_names, but for donor_ids.
+
+=cut
+
+
+=head2 sample_ids
+
+Similar to sample_names, but for ids.
+
+=cut
+
+
+=head2 sample_public_names
+
+Similar to sample_names, but for public_names.
+
+=cut
+
+
+=head2 sample_supplier_names
+
+Similar to sample_names, but for supplier_names.
+
+=cut
+
 
 =head2 study_names
 
@@ -697,50 +1203,35 @@ names of plex-level objects, otherwise returns object's own study name.
 Takes an optional argument with_spiked_control, wich defaults to true.
 
 =cut
-sub study_names {
-  my ($self, $with_spiked_control) = @_;
-  return $self->_list_of_properties(q[name], q[study], $with_spiked_control);
-}
 
-=head2 library_ids
 
-Similar to library_names, but for ids
+=head2 study_accession_numbers
+
+Similar to study_names, but for accession_numbers.
 
 =cut
-sub library_ids {
-  my ($self, $with_spiked_control) = @_;
-  return $self->_list_of_properties(q[id], q[library], $with_spiked_control);
-}
 
-=head2 sample_ids
-
-Similar to sample_names, but for ids
-
-=cut
-sub sample_ids {
-  my ($self, $with_spiked_control) = @_;
-  return $self->_list_of_properties(q[id], q[sample], $with_spiked_control);
-}
 
 =head2 study_ids
 
-Similar to study_names, but for ids
+Similar to study_names, but for ids.
 
 =cut
-sub study_ids {
-  my ($self, $with_spiked_control) = @_;
-  return $self->_list_of_properties(q[id], q[study], $with_spiked_control);
-}
+
+
+=head2 study_titles
+
+Similar to study_names, but for study_titles.
+
+=cut
+
 
 =head2 project_ids
 
-A list of project ids, similar to study_ids
+A list of project ids, similar to study_ids.
 
 =cut
-sub project_ids {
-  my ($self, $with_spiked_control) = @_;
-  return $self->_list_of_properties(q[id], q[project], $with_spiked_control);
-}
+
 
 =head2 library_type
 
@@ -801,28 +1292,7 @@ A list of library types, excluding spiked phix library
 =cut
 sub library_types {
   my ($self) = @_;
-  if (!defined $self->position) { my @l = (); return @l; }
-
-  my @objects = ();
-  if ($self->is_pool) {
-    foreach my $tlims ($self->children) {
-      if ($self->spiked_phix_tag_index && $self->spiked_phix_tag_index == $tlims->tag_index) {
-        next;
-      }
-      push @objects, $tlims;
-    }
-  } else {
-    @objects = ($self);
-  }
-  my $lt_hash = {};
-  foreach my $o (@objects) {
-    my $ltype = _derived_library_type($o);
-    if ($ltype) {
-      $lt_hash->{$ltype} = 1;
-    }
-  }
-  my @t = sort keys %{$lt_hash};
-  return @t;
+  return $self->_list_of_attributes('_derived_library_type',0);
 }
 
 =head2 driver_method_list
@@ -832,6 +1302,25 @@ A sorted list of methods that should be implemented by a driver
 =cut
 sub driver_method_list {
   return @DELEGATED_METHODS;
+}
+
+=head2 driver_method_list_short
+
+A sorted list of methods that should be implemented by a driver
+
+=cut
+sub driver_method_list_short {
+  my @remove = @_;
+  my @methods = @DELEGATED_METHODS;
+  if (@remove) {
+    if ($remove[0] eq __PACKAGE__ || ref $remove[0] eq __PACKAGE__) {
+      shift @remove;
+    }
+    if (@remove) {
+      @methods = grep { my $delegated = $_; none {$_ eq $delegated} @remove } @DELEGATED_METHODS;
+    }
+  }
+  return @methods;
 }
 
 =head2 method_list
@@ -848,7 +1337,7 @@ sub method_list {
     }
     push @attrs, $name;
   }
-  push @attrs, @DELEGATED_METHODS;
+  push @attrs, @METHODS;
   @attrs = sort @attrs;
   return @attrs;
 }
@@ -863,8 +1352,11 @@ sub to_string {
 
   my $d = ref $self->driver;
   ($d)= $d=~/::(\w+?)\z/smx;
-  my $s = __PACKAGE__ . q[ object, driver - ] . $d;
-  foreach my $attr (sort qw(id_run batch_id position tag_index)) {
+  my $s = __PACKAGE__ . q[ object];
+  if ($d) {
+    $s .= ", driver - $d";
+  }
+  foreach my $attr ( sort @{$METHODS_PER_CATEGORY{'primary'}} ) {
     my $value=$self->$attr;
     if (defined $value){
       $s .= q[, ] . join q[ ], $attr, $value;
@@ -874,7 +1366,6 @@ sub to_string {
 }
 
 __PACKAGE__->meta->make_immutable;
-no Moose;
 
 1;
 __END__
@@ -891,23 +1382,25 @@ __END__
 
 =item MooseX::Aliases
 
-=item MooseX::StrictConstructor
+=item Moose::Meta::Class
+
+=item Class::Load
+
+=item namespace::autoclean
 
 =item List::MoreUtils
 
 =item Carp
 
-=item English
-
 =item Readonly
 
 =item npg_tracking::util::types
 
-=item npg_tracking::glossary::run
+=item npg_tracking::glossary::rpt
 
-=item npg_tracking::glossary::lane
+=item npg_tracking::glossary::composition::factory::rpt
 
-=item npg_tracking::glossary::tag
+=item npg_tracking::glossary::composition::component::illumina
 
 =back
 
@@ -915,13 +1408,16 @@ __END__
 
 =head1 BUGS AND LIMITATIONS
 
+Objects created with rpt_list argument defined:
+is_control method always returns false
+
 =head1 AUTHOR
 
 Marina Gourtovaia E<lt>mg8@sanger.ac.ukE<gt>
 
 =head1 LICENSE AND COPYRIGHT
 
-Copyright (C) 2013 GRL, by Marina Gourtovaia
+Copyright (C) 2018 Genome Research Ltd
 
 This file is part of NPG.
 

@@ -1,6 +1,6 @@
 use strict;
 use warnings;
-use Test::More tests => 44;
+use Test::More tests => 45;
 use Test::Exception;
 use File::Temp qw/ tempdir /;
 use Moose::Meta::Class;
@@ -113,7 +113,7 @@ my $run_folder = q{123456_IL2_1234};
             } q{object directly from the role ok};
 
   throws_ok { $short_info->run_folder(); }
-    qr{does[ ]not[ ]support[ ]builder[ ]method[ ]'_build_run_folder'[ ]for[ ]attribute[ ]'run_folder'},
+    qr{does not support builder method '_build_run_folder' for attribute 'run_folder'},
     q{Error thrown as no _build_run_folder method in class};
 }
 
@@ -121,19 +121,19 @@ my $run_folder = q{123456_IL2_1234};
   my $short_info;
   lives_ok  { $short_info = test::short_info->new({}); } q{no error creating no-arg test object};
   throws_ok { $short_info->id_run();          }
-    qr{Unable[ ]to[ ]obtain[ ]id_run[ ]from name[ ]:[ ]Unable[ ]to[ ]obtain[ ]name[ ]from[ ]run_folder},
-    q{As no name or run_folder, can't obtain id_run};
+    qr{Need an id_run or name to generate the run_folder},
+    q{As run_folder, can't obtain id_run};
   throws_ok { $short_info->name();            }
-    qr{Unable[ ]to[ ]obtain[ ]name[ ]from[ ]run_folder},
+    qr{Unable to obtain name from run_folder},
     q{As no id_run or run_folder, can't obtain name};
   throws_ok { $short_info->run_folder();      }
-    qr{Need[ ]an[ ]id_run[ ]or[ ]name[ ]to[ ]generate[ ]the[ ]run_folder},
+    qr{Need an id_run or name to generate the run_folder},
     q{As no name or id_run, can't obtain run_folder};
   throws_ok { $short_info->_short_path();     }
-    qr{No[ ]run_folder,[ ]name[ ]or[ ]id_run[ ]provided},
+    qr{No run_folder, name or id_run provided},
     q{As no attributes, cannot get short path};
   throws_ok { $short_info->short_reference(); }
-    qr{Unable[ ]to[ ]obtain[ ]name[ ]from[ ]run_folder},
+    qr{Unable to obtain name from run_folder},
     q{As no id_run or run_folder, can't obtain name};
 }
 
@@ -199,7 +199,7 @@ my $run_folder = q{123456_IL2_1234};
   });
   is($short_info->short_reference(), $name, q{short_reference returns name});
   is($short_info->id_run(), $id_run, q{id_run worked out correctly});
-  is($short_info->short_reference(), $id_run, q{short_reference returns id_run});
+  is($short_info->short_reference(), $run_folder, q{short_reference returns run_folder});
   is($short_info->run_folder(), $run_folder, q{run_folder worked out correctly});
   is($short_info->short_reference(), $run_folder, q{short_reference returns run_folder});
 }
@@ -238,7 +238,7 @@ my $run_folder = q{123456_IL2_1234};
 
 {
     my $short_info = test::short_info->new({
-      run_folder =>q{120113_MS1_7362_A_MS0002061-00300},
+      run_folder =>q{120113_MS1_7362_A_MS0002061-300V2},
     });
 
     my $name;
@@ -247,9 +247,22 @@ my $run_folder = q{123456_IL2_1234};
       $name = $short_info->name();
       $flowcell_id= $short_info->flowcell_id();
     } q{MiSeq runfolder - kit id in place of flowcell};
-    is($short_info->run_folder, q(120113_MS1_7362_A_MS0002061-00300), q(run folder okay));
+    is($short_info->run_folder, q(120113_MS1_7362_A_MS0002061-300V2), q(run folder okay));
     is($name, q(MS1_7362), q(name okay));
-    is($flowcell_id, q(MS0002061-00300), q(flowcell_id (kit id) okay));
+    is($flowcell_id, q(MS0002061-300V2), q(flowcell_id (kit id) okay));
 }
+
+subtest 'process run_folder when no id_run present' => sub {
+  plan tests => 2;
+  my $run_folder = q{180517_A00512_0010_BH3WCVDSXX}; #NovaSeq folder pattern
+  my $short_info;
+
+  lives_ok {
+    $short_info = test::short_info->new({ run_folder => $run_folder });
+  } q[Can create object];
+  throws_ok  {
+    $short_info->id_run();
+  }  qr[Unable to identify id_run], q[Throws when it obtain id_run];
+};
 
 1;

@@ -14,12 +14,9 @@ use npg::model::instrument_status_dict;
 use npg::model::run_status_dict;
 use npg::model::instrument_status_dict;
 use GD;
-use GD::Graph::bars;
 use GD::Text;
-use npg::util::image::graph;
 use Carp;
 use English qw(-no_match_vars);
-use Date::Calc qw(Add_Delta_Days);
 use Readonly;
 use List::MoreUtils qw(any);
 use DateTime::Format::MySQL;
@@ -65,7 +62,6 @@ Readonly::Scalar our $COLOUR_LIGHT_ORANGE => [(252,174,42)];
 Readonly::Scalar our $COLOUR_BLUE   => [(61,171,255)];
 Readonly::Scalar our $COLOUR_YELLOW => [(246,229,171)];
 Readonly::Scalar our $COLOUR_PINK   => [(255,192,203)];
-Readonly::Scalar our $COLOUR_PURPLE     => [(160,0,147)];
 Readonly::Scalar our $PROGRESS_BAR_BG   => [(220,220,220)];
 Readonly::Scalar our $PROGRESS_BAR_FG   => [(225,225,60)];
 
@@ -74,20 +70,6 @@ Readonly::Scalar our $KEY_OFFSET_X     => 4;
 Readonly::Scalar our $KEY_BLOCK_WIDTH  => 20;
 Readonly::Scalar our $KEY_BLOCK_HEIGHT => 10;
 Readonly::Scalar our $KEY_FONTSIZE     => 24;
-
-sub authorised {
-  my $self   = shift;
-  my $util   = $self->util();
-  my $action = $self->action();
-  my $aspect = $self->aspect();
-  my $requestor = $util->requestor();
-
-  if($aspect eq 'update_statuses' && $requestor->is_member_of('engineers')) {
-    return 1;
-  }
-
-  return $self->SUPER::authorised();
-}
 
 sub new {
   my ($class, @args) = @_;
@@ -146,7 +128,7 @@ sub list_edit_statuses {
   my $root_isd = npg::model::instrument_status_dict->new({
                 util => $self->util(),
                });
-  $self->model->{instrument_status_dicts} = $root_isd->instrument_status_dicts();
+  $self->model->{instrument_status_dicts} = $root_isd->current_instrument_status_dicts();
 
   my $root_imd = npg::model::instrument_mod_dict->new({
                    util => $self->util(),
@@ -155,42 +137,6 @@ sub list_edit_statuses {
 
   return $self->list(@args);
 }
-
-sub update_statuses {
-  my $self  = shift;
-  my $model = $self->model();
-  my $util  = $self->util();
-  my $cgi   = $util->cgi();
-
-  if($model->name() ne 'group') {
-    return;
-  }
-
-  my @id_instruments = $cgi->param('id_instrument');
-  my $iisd           = $cgi->param('id_instrument_status_dict');
-  my $id_user        = $util->requestor->id_user();
-  my $comment        = $cgi->param('comment') || q();
-
-  if(!$comment) {
-    $self->add_warning('No comment given');
-    $self->aspect('list_edit_statuses');
-    return $self->list_edit_statuses();
-  }
-
-  for my $id_instrument (@id_instruments) {
-    my $is = npg::model::instrument_status->new({
-             util                      => $util,
-             id_instrument             => $id_instrument,
-             id_instrument_status_dict => $iisd,
-             id_user                   => $id_user,
-             comment                   => $comment,
-            });
-    $is->create();
-  }
-
-  return 1;
-}
-
 
 sub read { ## no critic (ProhibitBuiltinHomonyms)
   my $self    = shift;
@@ -234,7 +180,6 @@ sub read_key_png {
                                  {'busy'          => $colours->{'green'},  },
                                  {'idle'          => $colours->{'blue'},   },
                                  {'wash required' => $colours->{'yellow'}, },
-                                 {'req. approval' => $colours->{'purple'}, },
                                  {'plnd. repair'  => $colours->{'pink'},   },
                                  {'down4repair'   => $colours->{'red'},    },
                                  {'plnd. service' => $colours->{'lorange'},},
@@ -264,7 +209,6 @@ sub _allocate_colours {
   $colours->{'blue'}   = $im->colorAllocate(@{$COLOUR_BLUE});
   $colours->{'yellow'} = $im->colorAllocate(@{$COLOUR_YELLOW});
   $colours->{'pink'}   = $im->colorAllocate(@{$COLOUR_PINK});
-  $colours->{'purple'}   = $im->colorAllocate(@{$COLOUR_PURPLE});
   $colours->{'pbar_bg'}   = $im->colorAllocate(@{$PROGRESS_BAR_BG});
   $colours->{'pbar_fg'}   = $im->colorAllocate(@{$PROGRESS_BAR_FG});
   return $colours;
@@ -301,11 +245,9 @@ sub _read_png_colour {
     }
   }
   ##no critic (ProhibitCascadingIfElse)
-  if ( $statuses->{instrument} eq 'request approval' ) {
-    $bg = $colours->{'purple'};
-  } elsif ( $statuses->{instrument} eq 'down' || $statuses->{instrument} eq 'down for repair') {
+  if ( $statuses->{instrument} eq 'down for repair') {
     $bg = $colours->{'red'};
-  } elsif ( $statuses->{instrument} eq 'planned maintenance' || $statuses->{instrument} eq 'planned repair') {
+  } elsif ( $statuses->{instrument} eq 'planned repair') {
     $bg = $colours->{'pink'};
   } elsif ( $statuses->{instrument} eq 'down for service') {
     $bg = $colours->{'orange'};
@@ -415,7 +357,7 @@ sub read_png { ## no critic (Subroutines::ProhibitExcessComplexity)
   return $self->read_key_png() if $model->id_instrument() eq 'key';
 
   my $inst_model = $model->instrument_format->model();
-  my $is_hs = $model->is_hiseq_instrument;
+  my $is2slot = $model->is_two_slot_instrument;
   my $is_ms = $model->is_miseq_instrument;
 
   my $ins_status_obj = $model->current_instrument_status;
@@ -426,7 +368,7 @@ sub read_png { ## no critic (Subroutines::ProhibitExcessComplexity)
   my $current_run;
   my $run_status;
 
-  if ( !$is_hs ) {
+  if ( !$is2slot ) {
     $current_run = $model->current_run();
     $run_status  = $self->_run_status4image($current_run);
     if($current_run && $current_run->is_paired_read() && ! $is_ms ) {
@@ -440,7 +382,7 @@ sub read_png { ## no critic (Subroutines::ProhibitExcessComplexity)
                 : GD::Image->new($IMAGE_DIMENSIONS,$IMAGE_DIMENSIONS);
   $src->colorAllocate(@{$COLOUR_WHITE});
 
-  my $width  = $is_hs ? 2*$IMAGE_DIMENSIONS+2 : $IMAGE_DIMENSIONS;
+  my $width  = $is2slot ? 2*$IMAGE_DIMENSIONS+2 : $IMAGE_DIMENSIONS;
   my $height = $IMAGE_DIMENSIONS;
   my $im     = GD::Image->new($width, $height);
   my $colours = $self->_allocate_colours($im);
@@ -486,9 +428,9 @@ sub read_png { ## no critic (Subroutines::ProhibitExcessComplexity)
   }
 
    # display instrument model name
-   my $instr_annot_x = $is_hs ? 45 : $is_ms ? -10 : 0;
+   my $instr_annot_x = $is2slot ? 36 : $is_ms ? -10 : 0;
    $instr_annot_x += $INS_NAME_VALUE_ONE;
-   my $instr_annot_y = $is_hs ? -7 : $is_ms ? -7 : 0;
+   my $instr_annot_y = $is2slot ? -7 : $is_ms ? -7 : 0;
    $instr_annot_y += $INS_NAME_VALUE_TWO;
    $im->string($font, $instr_annot_x, $instr_annot_y, $model->name(),
      $model->is_cbot_instrument ? $colours->{'blue'} : $colours->{'black'});
@@ -499,7 +441,7 @@ sub read_png { ## no critic (Subroutines::ProhibitExcessComplexity)
 
   # display run-related info
   my $complete;
-   if (!$is_hs) {
+   if (!$is2slot) {
      $complete = $model->percent_complete(); # Short-hand for cBots
      $self->_run2image($im, $colours, $font, $current_run, $run_status, $ins_status, $complete);
      $self->_progress_bar_image($im, $colours, $font, $current_run, $run_status, $complete);
@@ -583,66 +525,9 @@ sub render {
       carp "ERROR generating image for instrument $i: $e";
     };
     return $image;
-  } elsif($aspect eq 'utilisation_png') {
-    return $self->list_utilisation_png();
-
-  } elsif($aspect eq 'uptime_png') {
-    return $self->list_uptime_png();
   }
 
   return $self->SUPER::render(@args);
-}
-
-sub list_utilisation_png {
-  my ($self) = @_;
-  my $cgi    = $self->util->cgi();
-  my $type   = $cgi->param('type') || q[];
-  my $data   = $self->model->utilisation($type);
-  my $graph  = npg::util::image::graph->new();
-  my $instrument_status = npg::model::instrument_status->new({
-                    util => $self->util(),
-                   });
-
-  for my $date (@{$data}) {
-    if ($type ne 'hour') {
-      ($date->{'date'}) = $date->{'date'} =~ /\d{4}-(\d{2}-\d{2})/xms;
-    }
-    $date = [$date->{'date'},$date->{'perc_utilisation'}];
-  }
-
-  if ($type eq 'hour') {
-    return $graph->plotter($data, {
-           width             => $PLOTTER_WIDTH,
-           height            => $PLOTTER_HEIGHT,
-           x_label           => 'Hour',
-           y_label           => 'Percentage Utilisation',
-           x_label_skip      => $X_LABEL_SKIP,
-           x_labels_vertical => 1,
-          }, 'area');
-  }
-
-  return $graph->plotter($data, {
-         width   => $PLOTTER_WIDTH,
-         height  => $PLOTTER_HEIGHT,
-         x_label => 'date',
-         y_label => 'percentage',
-        }, 'bars');
-}
-
-sub list_uptime_png {
-  my ($self) = @_;
-  my $graph  = npg::util::image::graph->new();
-  my $instrument_status = npg::model::instrument_status->new({
-                    util => $self->util(),
-                   });
-  my $data = $instrument_status->average_percentage_uptime_for_day();
-  return $graph->plotter($data, {
-         width             => $PLOTTER_WIDTH,
-         height            => $PLOTTER_HEIGHT,
-         x_label           => 'date',
-         y_label           => 'percentage',
-         x_labels_vertical => 1,
-        });
 }
 
 1;
@@ -685,15 +570,9 @@ npg::view::instrument - view handling for instruments
 
 =head2 render - specifics for read_graphical
 
-=head2 list_utilisation_png - handling to show percentage activity as a bar chart
-
 =head2 list_edit_statuses - batch instrument_status listing/form
 
 =head2 list_textual - basic text listing
-
-=head2 update_statuses - batch instrument_status update (form action)
-
-=head2 list_uptime_png - handling to show percentage up-time of instruments as a graph
 
 =head1 DIAGNOSTICS
 
@@ -723,13 +602,9 @@ npg::view::instrument - view handling for instruments
 
 =item GD
 
-=item GD::Graph::bars
-
 =item Carp
 
 =item English
-
-=item Date::Calc
 
 =back
 

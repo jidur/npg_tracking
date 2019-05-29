@@ -2,6 +2,10 @@
 # Author:        rmp
 # Created:       2007-03-28
 #
+#
+# This module is now DEPRACATED. Do not use. Use npg::api::request directly instead.
+# js10 5th June 2014
+#
 package npg::api::util;
 
 use strict;
@@ -16,7 +20,7 @@ use npg::api::request;
 our $VERSION = '0';
 
 Readonly::Scalar our $LIVE_BASE_URI => 'http://sfweb.internal.sanger.ac.uk:9000/perl/npg';
-Readonly::Scalar our $DEV_BASE_URI  => 'http://npg.dev.sanger.ac.uk/perl/npg';
+Readonly::Scalar our $DEV_BASE_URI  => 'http://sf2-farm-srv2.internal.sanger.ac.uk:9010/perl/npg';
 
 Readonly::Scalar our $MAX_RETRIES      => 3;
 Readonly::Scalar our $RETRY_DELAY      => 5;
@@ -95,11 +99,6 @@ sub get {
 sub post {
   my ($self, $uri, $args) = @_;
   return  $self->request('text/xml')->make($uri, q[POST], $args);
-}
-
-sub post_non_xml {
-  my ($self, $uri, $args) = @_;
-  return  $self->request()->make($uri, q[POST], $args);
 }
 
 1;

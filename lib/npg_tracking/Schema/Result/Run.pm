@@ -223,21 +223,6 @@ __PACKAGE__->belongs_to(
   { is_deferrable => 1, on_delete => "NO ACTION", on_update => "NO ACTION" },
 );
 
-=head2 mail_run_project_follower
-
-Type: might_have
-
-Related object: L<npg_tracking::Schema::Result::MailRunProjectFollower>
-
-=cut
-
-__PACKAGE__->might_have(
-  "mail_run_project_follower",
-  "npg_tracking::Schema::Result::MailRunProjectFollower",
-  { "foreign.id_run" => "self.id_run" },
-  { cascade_copy => 0, cascade_delete => 0 },
-);
-
 =head2 run_annotations
 
 Type: has_many
@@ -329,17 +314,57 @@ __PACKAGE__->has_many(
 );
 
 
-# Created by DBIx::Class::Schema::Loader v0.07036 @ 2014-02-28 12:00:59
-# DO NOT MODIFY THIS OR ANYTHING ABOVE! md5sum:30KwQYdLD+H3KvJKLf9OxQ
+# Created by DBIx::Class::Schema::Loader v0.07046 @ 2017-03-29 17:02:05
+# DO NOT MODIFY THIS OR ANYTHING ABOVE! md5sum:T5Bt3yeyrr0HVBcwmlVzgA
 
-# Author:        david.jackson@sanger.ac.uk
 # Created:       2010-04-08
 
 our $VERSION = '0';
 
 use Carp;
-use DateTime;
-use DateTime::TimeZone;
+use Try::Tiny;
+use Readonly;
+
+with qw/
+         npg_tracking::Schema::Retriever
+       /;
+
+Readonly::Hash   my %STATUS_PROPAGATE_AUTO => (
+  'analysis complete'  => 'analysis complete',
+  'manual qc complete' => 'archival pending',
+);
+
+Readonly::Array  my @WORKFLOW_TYPES         => qw/NovaSeqStandard NovaSeqXp/;
+Readonly::Scalar my $WORKFLOW_TAG_PREFIX    => q[workflow_];
+Readonly::Array  my @INSTRUMENT_SIDES       => qw/A B/;
+Readonly::Scalar my $INSTRUMENT_SIDE_PREFIX => q[fc_slot];
+
+=head2 tags
+
+Type: many_to_many
+
+Related object: L<npg_tracking::Schema::Result::Tag>
+
+=cut
+
+__PACKAGE__->many_to_many('tags' => 'tag_runs', 'tag');
+
+=head2 statuses
+
+Type: has_many
+
+Related object: L<npg_tracking::Schema::Result::RunStatus>
+
+The same as run_statuses.
+
+=cut
+
+__PACKAGE__->has_many(
+  "statuses",
+  "npg_tracking::Schema::Result::RunStatus",
+  { "foreign.id_run" => "self.id_run" },
+  { cascade_copy => 0, cascade_delete => 0 },
+);
 
 =head2 BUILD
 
@@ -350,7 +375,7 @@ Post-constructor: try to ensure instrument format is set for run.
 sub BUILD {
     my $self = shift;
     if ($self->id_instrument and not $self->id_instrument_format){
-      $self->id_instrument_format($self->instrument->id_instrument_format);
+        $self->id_instrument_format($self->instrument->id_instrument_format);
     }
 }
 
@@ -367,34 +392,6 @@ sub _event_type_rs {
     return $self->result_source->schema->resultset('EventType')->new( {} );
 }
 
-
-=head2 _rsd_rs
-
-Create a dbic RunStatusDict result set as shorthand and to access the row
-validation methods in that class.
-
-=cut
-
-sub _rsd_rs { my ($self) = @_;
-
-  return $self->result_source->schema->resultset('RunStatusDict')->new( {} );
-}
-
-
-=head2 _tag_rs
-
-Create a dbic Tag result set as shorthand and to access the row validation
-methods in that class.
-
-=cut
-
-sub _tag_rs {
-    my ($self) = @_;
-
-    return $self->result_source->schema->resultset('Tag')->new( {} );
-}
-
-
 =head2 _user_rs
 
 Create a dbic User result set as shorthand and to access the row validation
@@ -405,9 +402,8 @@ methods in that class.
 sub _user_rs {
     my ($self) = @_;
 
-     return $self->result_source->schema->resultset('User')->new( {} );
+    return $self->result_source->schema->resultset('User')->new( {} );
 }
-
 
 =head2 current_run_status_description
 
@@ -439,69 +435,125 @@ sub current_run_status {
   return $self->run_statuses()->search({iscurrent => 1})->first(); #not nice - would like this defined by a relationship
 }
 
-
-
 =head2 update_run_status
 
-Changes the status of a run. Creates a new current run status for this
-run, all the previous statuses are marked as not current.
+Creates a new run status for this run and, if appropriate, marks this
+status as current and all the previous statuses as not current.
 
-Also a new event row is created.
+The description of the status is required.
 
-Two arguments are required a run status and a user in that order. In both
-cases the primary key can be supplied, or the (case-insensitive) description
-or username fields respectively.
+    $run_row->update_run_status('some status');
 
-    $run_result_object->update_run_status( 4, 'jo3' );
-    $run_result_object->update_run_status( 'ArcHIVal pEnding, 5 );
+If there exists a status with this description that has the same timestamp
+or is current and has an earlier timestamp, a new status is not created.
+
+The current status is switched to the new one if the new status is not older
+than the current one.
+
+For a new current status a new event row is created and, if appropriate,
+instrument status gets changed. In some cases, the run status is automatically
+advanced one step further.
+
+An optional username can be supplied. If omitted, the pipeline user is
+assumed
+
+    $run_row->update_run_status( 'ArcHIVal pEnding', 'sloppy' );
+
+An optional third argument, a DateTime object, can be supplied. If omitted,
+current local time is used.
+
+    $run_row->update_run_status( 'ArcHIVal pEnding', 'sloppy', $date_obj );
+
+Returns undefined if the status has not been saved, otherwise returns the
+the new row, which can have iscurrent value set to either 1 or 0.
 
 =cut
 
 sub update_run_status {
-    my ( $self, $status_identifier, $user_identifier ) = @_;
+    my ( $self, $description, $user_identifier, $date ) = @_;
 
-    my $rsd_row = $self->_rsd_rs->_insist_on_valid_row($status_identifier);
-    my $rsd_id =  $rsd_row->id_run_status_dict();
-
-    my $user_id =
-        $self->_user_rs->_insist_on_valid_row($user_identifier)->id_user();
-
-    # Do nothing if the run_status is already set and current.
-     my $current_run_status =
-         $self->result_source->schema->resultset('RunStatus')->search(
-             {
-                 id_run             => $self->id_run(),
-                 id_run_status_dict => $rsd_id,
-                 iscurrent          => 1,
-             },
-     );
-
-     if ($current_run_status->count() != 1) {
-        # Make sure only one status is current.
-        my $old_status_rs = $self->result_source->schema->resultset('RunStatus')->
-            search( { id_run     => $self->id_run(),
-                  iscurrent  => 1, 
-                });
-        $old_status_rs->update( { iscurrent => 0 } );
-
-        my $new_run_status =
-            $self->result_source->schema->resultset('RunStatus')->create(
-            {
-                id_run             => $self->id_run(),
-                date               => DateTime->now(time_zone=> DateTime::TimeZone->new(name => q[local])),
-                id_run_status_dict => $rsd_id,
-                id_user            => $user_id,
-                iscurrent          => 1,
-            },
-        );
-        $new_run_status->update();
-
-        $self->run_status_event( $user_id, $new_run_status->id_run_status() );
+    $date ||= $self->get_time_now();
+    if ( ref $date ne 'DateTime' ) {
+        croak '"date" argument should be a DateTime object';
     }
 
-    $self->instrument->autochange_status_if_needed(
-      $rsd_row->description, $user_identifier);
-    return;
+    if ($self->status_is_duplicate($description, $date)) {
+      return;
+    }
+
+    my $current_status_rs = $self->related_resultset( q{run_statuses} )->search(
+              { iscurrent => 1,},
+              { order_by => { -desc => 'date'},},
+    );
+
+    my $current_status_row = $current_status_rs->next;
+    my $make_new_current = $self->current_status_is_outdated($current_status_row, $date);
+
+    my $use_pipeline_user = 1;
+    my $user_id = $self->get_user_id($user_identifier, $use_pipeline_user);
+
+    # Use transaction in case iscurrent flag has to be reset
+    my $transaction = sub {
+        if ($current_status_row && $make_new_current) {                               
+            $current_status_rs->update_all( {iscurrent => 0} );
+        }
+        return $self->related_resultset( q{run_statuses} )->create( {
+                run_status_dict    => $self->get_status_dict_row('RunStatusDict', $description),
+                date               => $date,
+                iscurrent          => $make_new_current,
+                id_user            => $user_id,
+        } );
+    };
+    my $new_row = $self->result_source->schema->txn_do( $transaction );
+
+    if ( $make_new_current ) {
+        try {
+            $self->run_status_event( $user_id, $new_row->id_run_status() );
+            $self->instrument->autochange_status_if_needed($description, $user_id);
+        } catch {
+            carp "Error performing post run status change actions \
+                  (event and instrument status update): $_";
+        }
+    }
+
+    return $new_row;
+}
+
+=head2 propagate_status_from_lanes
+
+Checks whether the current status of the lanes should trigger the run
+status update, triggers the update if appropriate. Returns true if
+the trigger has been activated, false otherwise.
+
+If correct behaviour with concurrent lane status updates is required,
+this method should not be called within the transaction that updates
+lane statuses since it needs visibility of current statuses of all
+lanes of the run. 
+
+=cut
+
+sub propagate_status_from_lanes {
+    my $self = shift;
+   
+    my $propagated = 0;
+    my %statuses = ();
+    foreach my $run_lane ($self->run_lanes()->all()) {
+      my $current = $run_lane->current_run_lane_status;
+      if (!$current) {
+        return $propagated; # One of lanes does not have current status
+      }
+      $statuses{$current->description} = 1;
+    }
+    if (scalar(keys %statuses) == 1) {
+        my ($description, $value)  = each %statuses;
+        my $auto = $STATUS_PROPAGATE_AUTO{$description};
+        if ( $auto ) {
+            $self->update_run_status($auto);
+            $propagated = 1;  
+        }
+    }
+
+    return $propagated;
 }
 
 =head2 run_status_event
@@ -526,7 +578,7 @@ sub run_status_event {
 
     croak 'No matching event type found' if !defined $id_event_type;
 
-    ( defined $when ) || ( $when =  DateTime->now(time_zone=> DateTime::TimeZone->new(name => q[local])));
+    ( defined $when ) || ( $when = $self->get_time_now());
 
 
     my $insert = $self->result_source->schema->resultset('Event')->create(
@@ -541,202 +593,148 @@ sub run_status_event {
     return $insert->id_event();
 }
 
-=head2 _map_opposed_tags
-
-Create a hashref that matches mutually exclusive run tags together.
-
-=cut
-
-sub _map_opposed_tags {
-    my ($self) = @_;
-
-    # Make some shorthand.
-    my $shorter = sub { $self->_tag_rs->_insist_on_valid_row($_[0]); };
-
-    my $paired_read_id = $shorter->('paired_read')->id_tag();
-    my $single_read_id = $shorter->('single_read')->id_tag();
-    my $paired_end_id  = $shorter->('paired_end')->id_tag();
-    my $single_end_id  = $shorter->('single_end')->id_tag();
-    my $good_id        = $shorter->('good')->id_tag();
-    my $bad_id         = $shorter->('bad')->id_tag();
-    my $slot_a_id      = $shorter->('fc_slotA')->id_tag();
-    my $slot_b_id      = $shorter->('fc_slotB')->id_tag();
-
-    $self->{opposite_tag} = {
-        $paired_read_id => $single_read_id,
-        $single_read_id => $paired_read_id,
-
-        $paired_end_id  => $single_end_id,
-        $single_end_id  => $paired_end_id,
-
-        $good_id        => $bad_id,
-        $bad_id         => $good_id,
-
-        $slot_a_id      => $slot_b_id,
-        $slot_b_id      => $slot_a_id,
-    };
-
-    return;
-}
-
-
-=head2 _set_mutually_exclusive_tags
-
-Some tags are paired and mutually exclusive (paired_end/single_end,
-paired_read/single_read, good/bad). This is method is called by set_tag to do
-the heavy lifting of setting one tag and making sure the opposite tag is not
-set.
-
-=cut
-
-sub _set_mutually_exclusive_tags {
-    my ( $self, $user_identifier, $is_tag_id, $is_not_tag_id ) = @_;
-
-    my $user_id =
-        $self->_user_rs->_insist_on_valid_row($user_identifier)->id_user();
-
-    my $tag_run_rs =
-        $self->result_source->schema->resultset('TagRun')->search(
-            {
-                id_run => $self->id_run(),
-                id_tag => { IN => [ $is_tag_id, $is_not_tag_id ] },
-            }
-    );
-
-
-    my $already_set = 0;
-    while ( my $row = $tag_run_rs->next() ) {
-        if ( $row->id_tag() eq $is_not_tag_id ) {
-            $row->delete();
-            next;
-        }
-
-        if ( $row->id_tag() eq $is_tag_id ) {
-            $already_set = 1;
-        }
-    }
-
-    return if $already_set;
-
-    $self->result_source->schema->resultset('TagRun')->create(
-        {
-            id_run  => $self->id_run(),
-            id_tag  => $is_tag_id,
-            id_user => $user_id,
-            date    => DateTime->now(time_zone=> DateTime::TimeZone->new(name => q[local])),
-        }
-    );
-
-
-    return;
-}
-
-
 =head2 set_tag
 
-General method for setting/creating TagRun rows.
+Assigns a tag to this run if this tag is not already assigned.
+If an incompatible is registered for the argument tag, the
+incompatible tag is removed after this tag is assigned.
+
+Returns 1 if the tag was assigned, 0 otherwise.
+
+Error if the transaction fails for any reason, includng a failure
+to roll back. Error if the user identifier is invalid.
 
 =cut
 
 sub set_tag {
-    my ( $self, $user_identifier, $tag_identifier ) = @_;
+    my ($self, $user_identifier, $tag) = @_;
 
-    if ( !$tag_identifier ) {
-        carp 'No tag supplied.';
-        return;
-    }
+    $tag or croak 'Tag is required.';
 
     my $user_id =
         $self->_user_rs->_insist_on_valid_row($user_identifier)->id_user();
 
-    my $tag_id =
-        $self->_tag_rs->_insist_on_valid_row($tag_identifier)->id_tag();
+    my $tag_row = $self->result_source()
+                       ->related_source('tag_runs')
+                       ->related_source('tag')
+                       ->resultset()
+                       ->find({tag => $tag});
+    $tag_row or croak "Cannot set unknown tag '$tag'";
 
-    ( scalar keys %{ $self->{opposite_tag} } ) || $self->_map_opposed_tags();
-
-    if ( defined $self->{opposite_tag}{$tag_id} ) {
-        $self->_set_mutually_exclusive_tags(
-            $user_identifier, $tag_id, $self->{opposite_tag}{$tag_id},
-        );
-        return;
-    }
-
-    $self->result_source->schema->resultset('TagRun')->find_or_create(
-        {
+    my $transaction = sub {
+        my $tag_set = 0;
+        my $tag_run = $self->tag_runs->find_or_new({
             id_run  => $self->id_run(),
-            id_tag  => $tag_id,
-            date    => DateTime->now(time_zone=> DateTime::TimeZone->new(name => q[local])),
-            id_user => $user_id,
-        },
-        { key => 'u_idrun_idtag' }
-    );
+            id_tag  => $tag_row->id_tag(),
+            date    => $self->get_time_now(),
+            id_user => $user_id
+        });
+        if (!$tag_run->in_storage()) {
+            my $itag = $tag_row->incompatible_tag();
+            $tag_run->insert();
+            if ($itag) {
+                $self->unset_tag($itag);
+            }
+            $tag_set = 1;
+        }
 
-    return;
+        return $tag_set;
+    };
+
+    return $self->result_source()->storage()->txn_do($transaction);
 }
-
 
 =head2 unset_tag
 
-General method for unsetting TagRun rows. It won't complain if the tag was
-already unset on the run. Also note that unsetting a tag that has a mutually
-exlusive opposite number DOES NOT set that opposite number (or unset it).
+Removes a record linking an argument tag to this run.
+No error if the tag was not set.
 
 =cut
 
 sub unset_tag {
-    my ( $self, $user_identifier, $tag_identifier ) = @_;
-
-    my $user_id =
-        $self->_user_rs->_insist_on_valid_row($user_identifier)->id_user();
-
-    my $tag_id =
-        $self->_tag_rs->_insist_on_valid_row($tag_identifier)->id_tag();
-
-#    ( scalar keys %{ $self->{opposite_tag} } ) || $self->_map_opposed_tags();
-
-#    if ( defined $self->{opposite_tag}{$tag_id} ) {
-#        $self->_set_mutually_exclusive_tags(
-#            $user_identifier, $self->{opposite_tag}{$tag_id}, $tag_id,
-#        );
-#        return;
-#    }
-
-    my $record = 
-        $self->result_source->schema->resultset('TagRun')->search(
-            {
-                id_run  => $self->id_run(),
-                id_tag  => $tag_id,
-            }
-        );
-
-    return $record->delete();
+    my ($self, $tag) = @_;
+    $self->tag_run4tag($tag)->delete;
+    return;
 }
-
 
 =head2 is_tag_set
 
-Test whether a suppled tag (db id or text) is set for the run. Returns 0 if
-not, and 1 if it is. Actually it returns the number of times it is set for the
-run. This should only ever be 1, but the method doesn't complain or even check
-if it's not.
+Returns true if the argument tag is set for the run, false otherwise.
 
 =cut
 
 sub is_tag_set {
-    my ( $self, $tag_identifier ) = @_;
-
-    my $tag_id =
-        $self->_tag_rs->_insist_on_valid_row($tag_identifier)->id_tag();
-
-    return 
-        $self->result_source->schema->resultset('TagRun')->search(
-            {
-                id_run  => $self->id_run(),
-                id_tag  => $tag_id,
-            }
-        )->count();
+    my ($self, $tag) = @_;
+    return $self->tag_run4tag($tag)->count ? 1 : 0;
 }
 
+=head2 tag_run4tag
+
+Returns a TagRun object for this run for an argument tag if such a
+record exists, undefined value if no record.
+
+=cut
+
+sub tag_run4tag {
+    my ($self, $tag) = @_;
+    return $self->tag_runs->search({'tag.tag' => $tag}, {join => 'tag'});
+}
+
+=head2 workflow_type
+
+Returns workflow type if it is set or an undefined value.
+
+=cut
+
+sub workflow_type {
+    my $self = shift;
+    foreach my $wf_type (@WORKFLOW_TYPES) {
+        if ($self->is_tag_set($WORKFLOW_TAG_PREFIX . $wf_type)) {
+            return $wf_type;
+        }
+    }
+    return;
+}
+
+=head2 set_workflow_type
+
+Sets workflow type tag.
+
+=cut
+
+sub set_workflow_type {
+    my ($self, $wf_type, $user) = @_;
+    $wf_type or croak 'Run workflow type should be given';
+    return $self->set_tag($user, $WORKFLOW_TAG_PREFIX . $wf_type);
+}
+
+=head2 instrument_side
+
+Returns instrument side (as A or B) if it is set or an undefined value.
+
+=cut
+
+sub instrument_side {
+    my $self = shift;
+    foreach my $side (@INSTRUMENT_SIDES) {
+        if ($self->is_tag_set($INSTRUMENT_SIDE_PREFIX . $side)) {
+            return $side;
+        }
+    }
+    return;
+}
+
+=head2 set_instrument_side
+
+Sets instrument side(slot) tag.
+
+=cut
+
+sub set_instrument_side {
+    my ($self, $side, $user) = @_;
+    $side or croak 'Instrument side should be given';
+    return $self->set_tag($user, $INSTRUMENT_SIDE_PREFIX . $side);
+}
 
 =head2 forward_read
 
@@ -749,7 +747,6 @@ sub forward_read {
     return $self->runs_read->find({read_order=>1});
 }
 
-
 =head2 reverse_read
 
 Get RunRead corresponding to the reverse read.
@@ -761,16 +758,112 @@ sub reverse_read {
     return $self->runs_read->find({read_order=>2+$self->is_tag_set(q(multiplex))});
 }
 
+=head2 loading_date
 
-=head2 tags
-
-Type: many_to_many
-
-Related object: L<npg_tracking::Schema::Result::Tag>
+Latest run pending status date.
 
 =cut
 
-__PACKAGE__->many_to_many('tags' => 'tag_runs', 'tag');
+sub loading_date {
+  my $self = shift;
+
+  my $status = $self->run_statuses->search(
+    {
+         'run_status_dict.description' => 'run pending',
+    },
+    {
+         join     => 'run_status_dict',
+         order_by => { -asc => 'me.date'},
+    }
+  )->next;
+
+  return $status ? $status->date : undef;
+}
+
+=head2 name
+
+Run name (including instrument name).
+
+=cut
+
+sub name {
+  my $self = shift;
+  my $instr = $self->instrument;
+  return sprintf '%s_%05d',
+             $instr ? $instr->name()   : 'UNKNOWN',
+             $self->id_run;
+}
 
 __PACKAGE__->meta->make_immutable;
 1;
+
+__END__
+
+=head1 SYNOPSIS
+
+=head1 DESCRIPTION
+
+Result class definition in DBIx binding for npg tracking database.
+
+=head1 DIAGNOSTICS
+
+=head1 CONFIGURATION AND ENVIRONMENT
+
+=head1 SUBROUTINES/METHODS
+
+=head1 DEPENDENCIES
+
+=over
+
+=item strict
+
+=item warnings
+
+=item Moose
+
+=item MooseX::NonMoose
+
+=item MooseX::MarkAsMethods
+
+=item DBIx::Class::Core
+
+=item DBIx::Class::InflateColumn::DateTime
+
+=item Carp
+
+=item Try::Tiny
+
+=item Readonly
+
+=item npg_tracking::Schema::Retriever
+
+=back
+
+=head1 INCOMPATIBILITIES
+
+=head1 BUGS AND LIMITATIONS
+
+=head1 AUTHOR
+
+David Jackson E<lt>david.jackson@sanger.ac.ukE<gt>
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright (C) 2014 Genome Research Limited
+
+This file is part of NPG.
+
+NPG is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program. If not, see <http://www.gnu.org/licenses/>.
+
+=cut

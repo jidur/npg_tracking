@@ -1,0 +1,24 @@
+#!/usr/bin/env perl
+my $VAR1 = {
+  'staging_areas' => {
+    'indexes' => [18 .. 32, 34 .. 47, 49 .. 55],
+    'prefix' => '/nfs/sf',
+    'samplesheets' => '/nfs/sf49/ILorHSorMS_sf49/samplesheets/'
+  },
+  'staging_areas2webservers' => {
+    'gs01'    => {'npg_tracking' => 'http://gso1.san.ac.uk:678',
+                  'seqqc'        => 'http://gso1.san.ac.uk:999'},
+    'default' => {'npg_tracking' => 'http://some.san.ac.uk:678',
+                  'seqqc'        => 'http://some.san.ac.uk:999'},
+    'esa-sv' => {'npg_tracking'  => 'http://esa-sv.dnap.san.ac.uk:678',
+                 'seqqc'         => 'http://esa-sv.dnap.san.ac.uk:999'},
+  },
+  'repository' => {
+    'root' => '/lustre/scratch109/srpipe/',
+    'instrument_prefix' => 'C:\Illumina\MiSeq Reporter\Genomes\WTSI_references'
+  },
+  'users' => {
+    'production' => [qw/userone usertwo/],
+  },
+  'mock' =>'mock entry to test that we are reading this file',
+}

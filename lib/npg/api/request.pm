@@ -17,7 +17,7 @@ use File::Path;
 use File::Spec::Functions qw(catfile);
 use Readonly;
 
-our $VERSION = '75.2';
+our $VERSION = '0';
 
 ## no critic (RequirePodAtEnd RequireCheckingReturnValueOfEval)
 
@@ -48,6 +48,7 @@ Readonly::Scalar our $SAVE2CACHE_VAR_NAME => q[SAVE2NPG_WEBSERVICE_CACHE];
 Readonly::Scalar our $MAX_RETRIES          => 10;
 Readonly::Scalar our $RETRY_DELAY          => 10;
 Readonly::Scalar our $LWP_TIMEOUT          => 60;
+Readonly::Scalar our $LWP_TIMEOUT_POST     => $LWP_TIMEOUT * 2;
 Readonly::Scalar our $DEFAULT_METHOD       => q[GET];
 Readonly::Scalar our $DEFAULT_CONTENT_TYPE => q[text/xml];
 
@@ -133,6 +134,27 @@ sub _build_useragent {
     return $ua;
 }
 
+=head2 login
+
+login for making a HTTP request
+
+=cut
+has 'login' => (isa => 'Maybe[Str]',
+                is => 'ro',
+                required => 0,
+               );
+
+=head2 password
+
+password to go with login above
+
+=cut
+has 'password' =>(isa => 'Maybe[Str]',
+                  is => 'ro',
+                  required => 0,
+                 );
+
+
 =head2 make
 
 Contacts a web service to perform a requested operation.
@@ -187,10 +209,13 @@ sub make {
 sub _create_path {
   my ( $self, $url ) = @_;
 
-  my ($stpath)  = $url =~ m{\Ahttps?://psd\-[^/]+(.*?)\z}xms; # sequencescape path
+  my ($stpath)  = $url =~ m{\Ahttps?://(?:dev\.)?
+                            psd.*
+                            \.sanger\.ac\.uk?(?::\d+)
+                            (.*?)\z}xms; # sequencescape path
   ##no critic(ProhibitComplexRegexes)
   my ($npgpath) = $url =~ m{\Ahttps?://
-                            (?:npg|sfweb)
+                            (?:npg|sfweb|sf2-farm-srv1)
                             (?:\.(?:dev|internal))?
                              \.sanger\.ac\.uk?(?::\d+)?
                              \/perl\/npg\/
@@ -274,11 +299,15 @@ sub _from_web {
         $req = GET $uri, @{$args||[]};
     } else {
         $req = POST $uri, @{$args||[]};
+        $self->useragent()->timeout($LWP_TIMEOUT_POST);
     }
     if ($self->content_type) {
         $req->header('Accept' => $self->content_type);
     }
     $self->_personalise_request($req);
+    if ($self->login) {
+        $req->authorization_basic($self->login, $self->password);
+    }
 
     my $response = $self->_retry(sub {
              my $inner_response = $self->useragent()->request($req);

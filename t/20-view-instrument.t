@@ -1,11 +1,12 @@
 use strict;
 use warnings;
-use Test::More tests => 25;
-use Test::Exception::LessClever;
+use Test::More tests => 17;
+use Test::Exception;
 use t::util;
 use t::request;
 use GD qw(:DEFAULT :cmp);
 use File::Spec;
+use DateTime();
 
 use_ok('npg::view::instrument');
 
@@ -67,6 +68,13 @@ my $image_dir = File::Spec->catfile('t', 'data', 'rendered', 'images');
 }
 
 {
+  my $now = DateTime->now() . q[];
+  my $sql = "update instrument_status set date='$now'";
+  if (!$util->dbh->do($sql)) {
+    die 'Failed to update date';
+  }
+  $util->dbh->commit();
+
   my $str = t::request->new({
            REQUEST_METHOD => 'GET',
            PATH_INFO      => '/instrument/11',
@@ -91,77 +99,6 @@ my $image_dir = File::Spec->catfile('t', 'data', 'rendered', 'images');
 
 {
   my $str = t::request->new({
-           REQUEST_METHOD => 'POST',
-           PATH_INFO      => '/instrument/group;update_statuses',
-           username       => 'public',
-           util           => $util,
-          });
-
-  like($str, qr/not\ authorised/,
-    'public not authorised for group status update');
-}
-
-{
-  my $str = t::request->new({
-           REQUEST_METHOD => 'POST',
-           PATH_INFO      => '/instrument/group;update_statuses',
-           username       => 'joe_engineer',
-           util           => $util,
-          });
-
-  unlike($str, qr/not\ authorised/, 'engineer authorised for group status update');
-  like($str, qr/no\ comment\ given/mix, 'no-comment warning');
-}
-
-{
-  my $str = t::request->new({
-           REQUEST_METHOD => 'GET',
-           PATH_INFO      => '/instrument;list_uptime_png',
-           username       => 'public',
-           util           => $util,
-          });
-
-  like($str, qr{image/png.*PNG}smx, 'instrument graphical uptime is a png');
-}
-
-{
-  my $str = t::request->new({
-           REQUEST_METHOD => 'GET',
-           PATH_INFO      => '/instrument;list_utilisation_png',
-           username       => 'public',
-           util           => $util,
-          });
-
-  like($str, qr{image/png.*PNG}smx, 'instrument graphical utilisation');
-}
-
-{
-  my $str = t::request->new({
-           REQUEST_METHOD => 'GET',
-           PATH_INFO      => '/instrument/utilisation.png',
-           username       => 'public',
-           util           => $util,
-          });
-
-  like($str, qr{image/png.*PNG}smx, 'instrument graphical utilisation (new-style)');
-}
-
-{
-  my $str = t::request->new({
-           REQUEST_METHOD => 'GET',
-           PATH_INFO      => '/instrument;list_utilisation_png',
-           username       => 'public',
-           util           => $util,
-           cgi_params     => {
-            type => 'hour',
-                 },
-          });
-
-  like($str, qr{image/png.*PNG}smx, 'instrument graphical utilisation by hour');
-}
-
-{
-  my $str = t::request->new({
            REQUEST_METHOD => 'GET',
            PATH_INFO      => '/instrument/12.png',
            username       => 'public',
@@ -181,12 +118,10 @@ my $image_dir = File::Spec->catfile('t', 'data', 'rendered', 'images');
 
   like($str, qr{image/png.*PNG}smx, 'instrument key graphical read');
   my $expected = GD::Image->new( File::Spec->catfile($image_dir, 'key.png'));
-  my @lines = split "\n", $str;
-  shift @lines; shift @lines; shift @lines;
-  my $rendered = GD::Image->new(join "\n", @lines);
+  $str =~s/\A(?:^\S[^\n]*\n)+\n(\o{211}PNG)/$1/smx; #trim http header off
+  my $rendered = GD::Image->new($str);
   ok (!($rendered->compare($expected) & GD_CMP_IMAGE), 'legend image'); 
 }
-
 
 {
   my $str = t::request->new({
@@ -198,21 +133,9 @@ my $image_dir = File::Spec->catfile('t', 'data', 'rendered', 'images');
 
   like($str, qr{image/png.*PNG}smx, 'HiSeq instrument graphical read');
   my $expected = GD::Image->new( File::Spec->catfile($image_dir, 'HS3.png'));
-  my @lines = split "\n", $str;
-  shift @lines; shift @lines; shift @lines;
-  my $rendered = GD::Image->new(join "\n", @lines);
+  $str =~s/\A(?:^\S[^\n]*\n)+\n(\o{211}PNG)/$1/smx; #trim http header off
+  my $rendered = GD::Image->new($str);
   ok (!($rendered->compare($expected) & GD_CMP_IMAGE), 'idle HiSeq image'); 
-}
-
-{
-  my $str = t::request->new({
-    PATH_INFO      => '/instrument/7',
-    REQUEST_METHOD => 'GET',
-    username       => 'joe_admin',
-    util           => $util,
-  });
-
-  ok($util->test_rendered($str, 't/data/rendered/instrument_status;add-cis2.html'), 'render of add ok for current instrument status of down');
 }
 
 {

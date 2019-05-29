@@ -1,7 +1,7 @@
 use strict;
 use warnings;
 use t::util;
-use Test::More tests => 121;
+use Test::More tests => 125;
 use Test::Deep;
 use Test::Exception;
 
@@ -107,8 +107,6 @@ my $util = t::util->new({ fixtures => 1 });
   isa_ok($current_instruments, 'ARRAY', '$model->current_instruments()');
   is((scalar@{$current_instruments} + 1), scalar@{$instruments}, 'scalar@{$model->current_instruments()} is 1 less than scalar@{$model->instruments()}');
   is($model->current_instruments(), $current_instruments, '$model->current_instruments() cached ok');
-
-  isa_ok($model->utilisation(), 'ARRAY', '$model->utilisation()');
 }
 
 {
@@ -166,9 +164,6 @@ my $util = t::util->new({ fixtures => 1 });
 
   my $current_instrument_status = $model->current_instrument_status();
   isa_ok($current_instrument_status, 'npg::model::instrument_status', q{$model->current_instrument_status()});
-
-  $util->catch_email($model);
-  is( scalar @{ $model->{emails} }, 0, q{no email sent} );
 
   is($model->current_instrument_status->instrument_status_dict->description, 'up', 'current status is up');
 
@@ -265,7 +260,7 @@ lives_ok {$util->fixtures_path(q[t/data/fixtures]); $util->load_fixtures;} 'a fr
 {
   my $model = npg::model::instrument->new({util => $util, id_instrument => 48,});
   ok(!$model->does_sequencing, 'instrument does not do sequencing');
-  ok(!$model->is_hiseq_instrument, 'is not hiseq instrument');
+  ok(!$model->is_two_slot_instrument, 'is not two slot instrument');
   ok($model->is_cbot_instrument, 'is cbot instrument');
   ok (!$model->is_idle, 'instrument is not idle');
   ok (!$model->status_to_change_to, 'no status to change to');
@@ -277,7 +272,7 @@ lives_ok {$util->fixtures_path(q[t/data/fixtures]); $util->load_fixtures;} 'a fr
 {
   my $model = npg::model::instrument->new({util => $util, id_instrument => 34,});
   ok($model->does_sequencing, 'instrument does sequencing');
-  ok(!$model->is_hiseq_instrument, 'is not hiseq instrument');
+  ok(!$model->is_two_slot_instrument, 'is not two slot instrument');
   is($model->fc_slots2current_runs, undef, 'does not have mapping of slots to current runs');
   is($model->fc_slots2blocking_runs, undef, 'does not have mapping of slots to blocking runs');
   ok ($model->is_idle, 'instrument is idle');
@@ -289,7 +284,7 @@ lives_ok {$util->fixtures_path(q[t/data/fixtures]); $util->load_fixtures;} 'a fr
 {
   my $model = npg::model::instrument->new({util => $util, id_instrument => 35,});
   ok($model->does_sequencing, 'instrument does sequencing');
-  ok($model->is_hiseq_instrument, 'is hiseq instrument');
+  ok($model->is_two_slot_instrument, 'is two_slot instrument');
   my $expected = {fc_slotA => [], fc_slotB => [],};
   cmp_deeply($model->fc_slots2current_runs, $expected, 'empty mapping of slots to current runs');
   cmp_deeply($model->fc_slots2blocking_runs, $expected, 'empty mapping of slots to blocking runs');
@@ -301,7 +296,7 @@ lives_ok {$util->fixtures_path(q[t/data/fixtures]); $util->load_fixtures;} 'a fr
 
 {
   my $model = npg::model::instrument->new({util => $util, id_instrument => 36,});
-  ok($model->is_hiseq_instrument, 'is hiseq instrument');
+  ok($model->is_two_slot_instrument, 'is two_slot instrument');
   my $run = $model->current_runs->[0];
   is ($run->id_run, 9951, 'first current run');
 
@@ -385,6 +380,26 @@ lives_ok {$util->fixtures_path(q[t/data/fixtures]); $util->load_fixtures;} 'a fr
   is(join(q[,], @{$model->possible_next_statuses4status('wash in progress')}),
     'wash performed,planned repair,planned service,down for repair', 
     'possible_next_statuses for "wash in progress" called as an object method');
+}
+
+{
+  my $model = npg::model::instrument->new({
+             util          => $util,
+             id_instrument => 4,
+            });
+  my $recent_is = $model->recent_instrument_statuses();
+  isa_ok($recent_is, 'ARRAY');
+  ok (!@{$recent_is}, 'no statuses within last year');
+  is( scalar @{$model->instrument_statuses()}, 2, 'two statuses in total');
+
+  lives_ok { $model->status_reset('wash required') } 'new status added';
+
+  $model = npg::model::instrument->new({
+             util          => $util,
+             id_instrument => 4,
+            });
+  is( scalar @{$model->recent_instrument_statuses()}, 1, 'one recent status');
+  is (scalar @{$model->instrument_statuses()}, 3, 'number of statuses in total');
 }
 
 1;

@@ -6,7 +6,7 @@ package Monitor::SRS::Local;
 
 use Moose;
 use Monitor::RunFolder;
-extends 'Monitor::SRS';
+extends 'Monitor::Instrument';
 with    'Monitor::Roles::Cycle';
 
 use Carp;
@@ -85,14 +85,9 @@ sub is_run_completed {
     #   Check this again sometime - I don't know if that's really true.
     my $file_string = join "\n", @root_list;
 
-    my $run_folder = Monitor::RunFolder->new( runfolder_path => $run_path, _schema => $self->schema );
-
-    my $netcopy = 'ImageAnalysis_Netcopy_complete_Read'.scalar $run_folder->read_cycle_counts;
-
-
-    return ( $file_string =~ m/\b$netcopy [.]txt\b/msx ) ? 1
-         : ( $file_string =~ m/\bRun[.]completed\b/msx )          ? 1
-         :                                                        0
+    return ( $file_string =~ m/\bRTAComplete[.]txt\b/msx ) ? 1
+         : ( $file_string =~ m/\bRun[.]completed\b/msx )   ? 1
+         :                                                   0
          ;
 }
 
@@ -160,7 +155,23 @@ path as its sole argument. Returns 1 if the flag is found, 0 otherwise.
 
 =head1 CONFIGURATION AND ENVIRONMENT
 
+=head1 DEPENDENCIES
 
+=over
+
+=item Moose
+
+=item Carp
+
+=item English
+
+=item IO::All
+
+=item IPC::System::Simple
+
+=item autodie
+
+=back
 
 =head1 INCOMPATIBILITIES
 
@@ -174,7 +185,7 @@ path as its sole argument. Returns 1 if the flag is found, 0 otherwise.
 
 John O'Brien, E<lt>jo3@sanger.ac.ukE<gt>
 
-=head1 LICENCE AND COPYRIGHT
+=head1 LICENSE AND COPYRIGHT
 
 Copyright (C) 2010 GRL, by John O'Brien
 

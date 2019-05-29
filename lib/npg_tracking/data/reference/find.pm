@@ -1,21 +1,15 @@
-#########
-# Author:        Marina Gourtovaia
-# Created:       14 April 2009
-#
-
 package npg_tracking::data::reference::find;
 
-use strict;
-use warnings;
 use Moose::Role;
 use Carp;
 use English qw(-no_match_vars);
 use File::Spec::Functions qw(catfile);
-use Cwd qw(abs_path);
 use Readonly;
 
+use npg_tracking::util::abs_path qw(abs_path);
 use npg_tracking::data::reference::info;
 use npg_tracking::util::messages;
+use npg_tracking::glossary::rpt;
 use st::api::lims;
 
 with qw/ npg_tracking::data::reference::list /;
@@ -29,8 +23,6 @@ Readonly::Scalar our $MINUS_ONE                  => -1;
 
 npg_tracking::data::reference::find
 
-=head1 VERSION
-
 =head1 SYNOPSIS
 
 An example of a class that implements this role
@@ -42,9 +34,7 @@ An example of a class that implements this role
  sub id_run   { return 1937; }
  sub position { return 1; }
  sub my_function { do something;}
-
  1;
- __END__
 
 Using your class
 
@@ -64,11 +54,10 @@ a list of samples.
 =cut
 
 
-Readonly::Scalar our $ALIGNER          => q[bwa];
+Readonly::Scalar our $ALIGNER          => q[fasta]; # so default is fasta and not one particular aligner's reference 
 Readonly::Scalar our $STRAIN           => q[default];
 Readonly::Scalar our $SUBSET           => q[all];
 Readonly::Scalar our $PHIX             => q[PhiX];
-Readonly::Array  our @REQUIRED_ACCESSORS  => qw/id_run position tag_index/;
 
 =head2 reference_genome
 
@@ -95,7 +84,7 @@ has 'species'  => (isa             => 'Maybe[Str]',
 sub _build_species {
   my $self = shift;
 
-  my @a = $self->_parse_reference_genome;
+  my @a = $self->parse_reference_genome;
   if (@a) {
     $self->_set_strain($a[1]);
     return $a[0];
@@ -121,24 +110,13 @@ has 'strain'=>    (isa             => 'Str',
                   );
 sub _build_strain {
   my $self = shift;
-  my @a = $self->_parse_reference_genome;
+  my @a = $self->parse_reference_genome;
   if (@a) {
     $self->_set_species($a[0]);
     return $a[1];
   }
   return $STRAIN;
 }
-
-=head2 subset
-
-Subset (i.e., chromosome), defaults to all
-
-=cut
-has 'subset'=>    (isa             => 'Str',
-                   is              => 'ro',
-                   required        => 0,
-                   default         => $SUBSET,
-                  );
 
 =head2 aligner
 
@@ -187,20 +165,27 @@ has 'lims'      => (isa             => 'st::api::lims',
 sub _build_lims {
   my $self = shift;
 
-  foreach my $method (@REQUIRED_ACCESSORS) {
-    if (!$self->can($method)) {
-      croak qq[Need '$method' accessor to access lims data];
+  my $ref = {};
+  if ($self->can('rpt_list') && $self->rpt_list) {
+    my @hlist = @{npg_tracking::glossary::rpt->inflate_rpts($self->rpt_list)};
+    if (scalar @hlist > 1) {
+      $ref->{'rpt_list'} = $self->rpt_list();
+    } else {
+      $ref = $hlist[0];
     }
+  } else {
+    my $rpt_key = npg_tracking::glossary::rpt->deflate_rpt($self);
+    $ref = npg_tracking::glossary::rpt->inflate_rpt($rpt_key);
   }
-  return st::api::lims->new(id_run => $self->id_run, position => $self->position, tag_index => $self->tag_index);
+
+  return st::api::lims->new($ref);
 }
 
 sub _abs_ref_path {
   my $path = shift;
-  (my $name) = $path =~ /\/([^\/]+)$/smx;
-  $path =~ s/$name$//smx;
-  ##no critic (CodeLayout::ProhibitParensWithBuiltins)
-  return join(q[/], abs_path($path), $name);
+  (my $name) = $path =~ /\/([^\/]+)\Z/smx;
+  $path =~ s/\Q$name\E\Z//smx;
+  return join q[/], abs_path($path), $name;
 }
 
 =head2 refs
@@ -228,7 +213,7 @@ sub refs {
   } else {
 
     my $spiked_phix_index = $MINUS_ONE;
-    if ($self->lims->is_pool && !$self->tag_index && $self->lims->spiked_phix_tag_index) {
+    if ($self->lims->is_pool && !($self->can(q(tag_index)) && $self->tag_index) && $self->lims->spiked_phix_tag_index) {
       $spiked_phix_index = $self->lims->spiked_phix_tag_index;
     }
 
@@ -249,28 +234,6 @@ sub refs {
   }
   @refs = map {_abs_ref_path($_)} @refs;
   return \@refs;
-}
-
-=head2 single_ref_found
-
-Returns true if only one reference has been found.
-Returns false if no references found or multiple references found.
-
-=cut
-sub single_ref_found {
-
-  my $self = shift;
-  carp 'This method is depricated. Please use the refs method and evaluate the size of the returned array.';
-
-  my @refs;
-  eval {
-    @refs = @{$self->refs()};
-    1;
-  } or do {
-    return 0;
-  };
-  if (!@refs || scalar @refs > 1) { return 0; }
-  return 1;
 }
 
 
@@ -349,15 +312,12 @@ sub _get_reference_path {
   $strain = $strain || $self->strain;
 
   # check that the directory for the chosen aligner exists
-  my $base_dir = catfile($self->ref_repository, $organism, $strain, $self->subset);
+  my $base_dir = catfile($self->ref_repository, $organism, $strain, $SUBSET);
   my $dir = catfile($base_dir, $self->aligner);
 
   if (!-e $dir) {
-    ##no critic (ProhibitInterpolationOfLiterals)
-    my $message = sprintf "Binary %s reference for %s, %s, %s does not exist; path tried %s",
-        $self->aligner, $organism, $strain, $self->subset, $dir;
-    ##use critic
-    croak $message;
+    croak sprintf 'Binary %s reference for %s, %s does not exist; path tried %s',
+        $self->aligner, $organism, $strain, $dir;
   }
 
   # read the fasta directory and get the file name with the reference
@@ -367,7 +327,7 @@ sub _get_reference_path {
 =head2 lims2ref
 
 Returns a path to a binary reference (with a prefix of the reference itself) for an asset object.
-Undefined value returned if the search has failed
+Undefined value returned if the search has failed.
 
 =cut
 sub lims2ref {
@@ -394,13 +354,6 @@ sub lims2ref {
         if (!$ref_path) {
           $self->messages->push(qq[no reference for taxon id $taxon_id]);
         }
-      } else {
-        foreach my $name (($lims->library_name, $lims->sample_name)) {
-          if ($name && $name =~ /phix/ismx ) {
-            $ref_path = $self->_get_reference_path($PHIX);
-            last;
-          }
-        }
       }
     }
   }
@@ -408,18 +361,38 @@ sub lims2ref {
   return $ref_path;
 }
 
-sub _parse_reference_genome {
-  my ($self, $reference_genome) = @_;
-  $reference_genome ||= $self->reference_genome;
-  if ($reference_genome) {
-     ##also allows for transcriptome version e.g. 'Homo_sapiens (1000Genomes_hs37d5 + ensembl_release_75)'
-     my @a = $reference_genome  =~/  (\S+) \s+ [(]  (\S+) (?: \s+ \+ \s+ (\S+) )? [)]  /smx;
-     if (scalar @a >= 2 && $a[0] && $a[1]) {
-        if (! $a[2]) { $#a = 1; }
-        return @a;
-     }
-  }
-  return;
+=head2 parse_reference_genome
+
+Parses LIMs notation for reference genome, returns a list containing
+an organism, strain (genome version) and, optionally, a transcriptome
+version and/or a word indicating the type of analysis to be run.
+
+=cut
+sub parse_reference_genome {
+    my ($self, $reference_genome) = @_;
+    $reference_genome ||= $self->reference_genome;
+    if ($reference_genome) {
+        my ($organism, $strain, $tversion, $analysis, @array);
+        ## allows for transcriptome version and analysis e.g. 'Homo_sapiens (1000Genomes_hs37d5 + ensembl_release_75) [star]'
+        $organism = '(?<organism>\S+)\s+';
+        $strain = '(?<strain>\S+)';
+        $tversion = '(?:\s+\+\s+(?<tversion>\S+))?';
+        $analysis = '(?:\s+[[](?<analysis>\S+)[]])?';
+        $reference_genome  =~ qr{$organism [(] $strain $tversion [)] $analysis}smx;
+        $organism = $LAST_PAREN_MATCH{'organism'};
+        $strain = $LAST_PAREN_MATCH{'strain'};
+        $tversion = $LAST_PAREN_MATCH{'tversion'};
+        $analysis = $LAST_PAREN_MATCH{'analysis'};
+        if ($organism && $strain) {
+            if ($tversion || $analysis) {
+                @array = ($organism, $strain, $tversion, $analysis);
+            } else {
+                @array = ($organism, $strain);
+            }
+            return @array;
+        }
+    }
+    return;
 }
 
 sub _preset_ref2ref_path {
@@ -430,7 +403,7 @@ sub _preset_ref2ref_path {
   }
 
   my $ref_path = q[];
-  my ($species, $strain) = $self->_parse_reference_genome($ref);
+  my ($species, $strain) = $self->parse_reference_genome($ref);
   if ($species && $strain) {
     $ref_path = $self->_get_reference_path($species, $strain);
   } else {
@@ -452,10 +425,6 @@ __END__
 
 =over
 
-=item strict
-
-=item warnings
-
 =item Moose::Role
 
 =item Carp
@@ -466,11 +435,13 @@ __END__
 
 =item Readonly
 
-=item Cwd
+=item npg_tracking::util::abs_path
 
 =item npg_tracking::util::messages
 
 =item npg_tracking::data::reference::list
+
+=item npg_tracking::glossary::rpt
 
 =item st::api::lims
 
@@ -486,7 +457,7 @@ Marina Gourtovaia E<lt>mg8@sanger.ac.ukE<gt>
 
 =head1 LICENSE AND COPYRIGHT
 
-Copyright (C) 2011 GRL, by Marina Gourtovaia
+Copyright (C) 2017 GRL
 
 This file is part of NPG.
 

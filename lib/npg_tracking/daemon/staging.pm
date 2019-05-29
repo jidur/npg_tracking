@@ -1,67 +1,21 @@
-#########
-# Author:        Marina Gourtovaia
-# Created:       17 April 2013
-#
-
 package npg_tracking::daemon::staging;
 
 use Moose;
-use Carp;
-use English qw(-no_match_vars);
 use Readonly;
 
-extends 'npg_tracking::daemon';
+extends 'npg_tracking::daemon::staging_local';
 
 our $VERSION = '0';
 
 Readonly::Scalar our $SCRIPT_NAME => q[staging_area_monitor];
 
-has 'root_dir'  => (isa       => 'Str',
-                    is        => 'ro',
-                    required  => 0,
-                    default => q[/export],
-                   );
-
-override '_build_hosts' => sub {
-    ##no critic (TestingAndDebugging::ProhibitNoWarnings)
-    no warnings 'once';
-    ##use critic
-    require npg_tracking::illumina::run::folder::location;
-    my @full_list = map { 'sf' . $_ . '-nfs' }
-        @npg_tracking::illumina::run::folder::location::STAGING_AREAS_INDEXES;
-    return \@full_list;
+override 'command'      => sub {
+  my ($self, $host) = @_;
+  my $sfarea = $self->host_name2path($host);
+  return join q[ ], $SCRIPT_NAME, $sfarea;
 };
-override 'command'      => sub { my ($self, $host) = @_;
-                                 my $sfarea = $self->_host_to_sfarea($host);
-                                 return join q[ ], $SCRIPT_NAME, $sfarea;
-                               };
+
 override 'daemon_name'  => sub { return $SCRIPT_NAME; };
-
-override 'log_dir' => sub { my ($self, $host) = @_;
-                            my $sfarea = $self->_host_to_sfarea($host);
-                            my $log_dir = "$sfarea/staging_daemon_logs";
-
-                            return $log_dir;
-                          };
-
-=head2 _host_to_sfarea
-
-Convert sfNN-nfs to NN and prefix the root_dir
-
-=cut
-sub _host_to_sfarea {
-    my ($self, $host) = @_;
-    if (!$host) {
-      croak q{Need host name};
-    }
-    (my $sfarea) = $host =~ /^sf(\d+)-nfs$/smx;
-    if (!$sfarea) {
-      croak qq{Host name $host does not follow expected pattern sfXX-nfs};
-     }
-
-    my $root_dir = $self->root_dir;
-    return qq[$root_dir/sf$sfarea];
-}
 
 no Moose;
 
@@ -76,7 +30,7 @@ npg_tracking::daemon::staging
 
 =head1 DESCRIPTION
 
-Metadata for a daemon that starts up the analysis script.
+  Staging area daemon definition.
 
 =head1 SUBROUTINES/METHODS
 
@@ -90,13 +44,7 @@ Metadata for a daemon that starts up the analysis script.
 
 =item Moose
 
-=item Carp
-
-=item English
-
 =item Readonly
-
-=item npg_tracking::illumina::run::folder::location
 
 =back
 
@@ -110,7 +58,7 @@ Marina Gourtovaia E<lt>mg8@sanger.ac.ukE<gt>
 
 =head1 LICENSE AND COPYRIGHT
 
-Copyright (C) 2013 GRL, by Marina Gourtovaia
+Copyright (C) 2014 GRL, by Marina Gourtovaia
 
 This file is part of NPG.
 

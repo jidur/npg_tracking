@@ -3,9 +3,10 @@
            index=0
 %]
 
-[%- reqd_order_of_inst_type = ['MiSeq','HiSeq','GA-II','cBot'] -%]
+[%- reqd_order_of_inst_type = ['MiSeq','NovaSeq','HiSeqX','HiSeq 4000','HiSeq','cBot'] -%]
 <ul class="instrument_by_type">
-[% FOREACH ins IN reqd_order_of_inst_type ; instruments = model.instruments.0.instrument_format.current_instruments_by_format.$ins -%]
+[% FOREACH ins IN reqd_order_of_inst_type ;
+   instruments = model.instruments.0.instrument_format.current_instruments_by_format.$ins -%]
 [% NEXT IF ! instruments.0 -%]
 
   <li>Instrument Type: [% ins %]
@@ -15,7 +16,7 @@
 	    [% status = instrument.current_run.current_run_status.run_status_dict.description;
                runs = [];
                IF status;
-                 IF instrument.is_hiseq_instrument;
+                 IF instrument.is_two_slot_instrument;
                    map = instrument.fc_slots2current_runs;
                    FOREACH slot IN map.keys.sort;
                      IF map.$slot.size;
@@ -29,7 +30,7 @@
                  END;
                END;
             %]
-	    <li id="instrument[% instrument.id_instrument %]"><a href="[% SCRIPT_NAME %]/instrument/[% instrument.name %]"> <img style="background:no-repeat url('/prodsoft/npg/gfx/spinner.gif');" src="[% SCRIPT_NAME %]/instrument/[% instrument.name %].png" alt="[% instrument.name %]" title="[% run_info=''; IF status; run_info = runs.0.name _ ' ' _ status; END; PROCESS instr_full_info %]" [% IF status %] usemap="#instmap[% instrument.name %]"[% END %] /></a>
+	    <li id="instrument[% instrument.id_instrument %]"><a href="[% SCRIPT_NAME %]/instrument/[% instrument.name %]"> <img style="background:no-repeat url('/gfx/spinner.gif');" src="[% SCRIPT_NAME %]/instrument/[% instrument.name %].png" alt="[% instrument.name %]" title="[% run_info=''; IF status; run_info = runs.0.name _ ' ' _ status; END; PROCESS instr_full_info %]" [% IF status %] usemap="#instmap[% instrument.name %]"[% END %] /></a>
 [%- IF status %]
 <map id="instmap[% instrument.name %]" name="instmap[% instrument.name %]">
 [%- count = 0;
@@ -49,7 +50,7 @@
       count = count + 1;
     END;
     coords = [0,0,110,80];
-    IF instrument.is_hiseq_instrument;
+    IF instrument.is_two_slot_instrument;
       shift = 55;
       coords.0 = coords.0 + shift;
       coords.2 = coords.2 + shift;

@@ -281,39 +281,9 @@ __PACKAGE__->has_many(
   { cascade_copy => 0, cascade_delete => 0 },
 );
 
-=head2 sensor_data_instruments
 
-Type: has_many
-
-Related object: L<npg_tracking::Schema::Result::SensorDataInstrument>
-
-=cut
-
-__PACKAGE__->has_many(
-  "sensor_data_instruments",
-  "npg_tracking::Schema::Result::SensorDataInstrument",
-  { "foreign.id_instrument" => "self.id_instrument" },
-  { cascade_copy => 0, cascade_delete => 0 },
-);
-
-=head2 sensor_instruments
-
-Type: has_many
-
-Related object: L<npg_tracking::Schema::Result::SensorInstrument>
-
-=cut
-
-__PACKAGE__->has_many(
-  "sensor_instruments",
-  "npg_tracking::Schema::Result::SensorInstrument",
-  { "foreign.id_instrument" => "self.id_instrument" },
-  { cascade_copy => 0, cascade_delete => 0 },
-);
-
-
-# Created by DBIx::Class::Schema::Loader v0.07035 @ 2013-07-23 16:11:42
-# DO NOT MODIFY THIS OR ANYTHING ABOVE! md5sum:F7mTaj060i1RggPpHSpfXw
+# Created by DBIx::Class::Schema::Loader v0.07046 @ 2017-04-22 11:28:19
+# DO NOT MODIFY THIS OR ANYTHING ABOVE! md5sum:E5Nz+9XPZcWU7mIsrGXHXw
 
 # Author:        david.jackson@sanger.ac.uk
 # Created:       2010-04-08
@@ -335,9 +305,8 @@ Readonly::Array  our @CURRENT_RUNS    => ('run pending', 'run in progress', 'run
 Readonly::Array  our @BLOCKING_RUNS   => ('run pending', 'run in progress', 'run on hold');
 
 Readonly::Hash my %STATUS_CHANGE_AUTO => {
-  'up' => 'wash required',
+  'up'                  => 'wash required',
   'wash performed'      => 'up',
-  'planned maintenance' => 'down for repair',
   'planned repair'      => 'down for repair',
   'planned service'     => 'down for service',
 };
@@ -371,21 +340,6 @@ Related object: L<npg_tracking::Schema::Result::SensorData>
 =cut
 
 __PACKAGE__->many_to_many('sensor_data' => 'sensor_data_instruments', 'sensor_data');
-
-
-=head2 _isd_rs
-
-Create a dbic InstrumentStatusDict result set as shorthand and to access the
-row validation methods in that class.
-
-=cut
-
-sub _isd_rs {
-    my ($self) = @_;
-
-    return $self->result_source->schema->resultset('InstrumentStatusDict')
-                ->new( {} );
-}
 
 
 =head2 _user_rs
@@ -441,22 +395,26 @@ Change the instrument_status for an instrument. This means adding a new row to
 the instrument_status table and setting the iscurrent field to 1, after
 marking all the previous rows for the isntrument as iscurrent 0.
 
-Two arguments are required, an instrument status and a user in that order. In
-both cases the primary key can be supplied, or the (case-insensitive)
-description or username fields respectively.
+Two arguments are required, an instrument status description and a user id or
+name.
 
-    $instrument_result_object->update_instrument_status( 4, 'jo3' );
-    $instrument_result_object->update_instrument_status( 'Down', 5 );
+    $instrument_result_object->update_instrument_status( 'Down', 'jo3');
+    $instrument_result_object->update_instrument_status( 'Down', 5);
 
 =cut
 
 sub update_instrument_status {
-    my ( $self, $status_identifier, $user_identifier, $comment ) = @_;
+    my ( $self, $status_description, $user_identifier, $comment ) = @_;
 
     ( defined $comment ) || ( $comment = q{} );
 
-    my $isd_id = $self->_isd_rs->_insist_on_valid_row($status_identifier)->
-                    id_instrument_status_dict();
+    my $status_row = $self->result_source()
+                          ->related_source('instrument_statuses')
+                          ->related_source('instrument_status_dict')
+                          ->resultset()->find({description => $status_description});
+    $status_row or croak "Invalid instrument status '$status_description'";
+    $status_row->iscurrent or croak "Instrument status '$status_description' is not current";
+    my $isd_id = $status_row->id_instrument_status_dict();
 
     my $user_id =
         $self->_user_rs->_insist_on_valid_row($user_identifier)->id_user();
@@ -520,10 +478,8 @@ sub status_to_change_to {
     my $next_auto = $STATUS_CHANGE_AUTO{$current};
 
     if ( $self->is_idle() &&
-      ($current eq 'planned maintenance' ||
-       $current eq 'planned repair' ||
-       $current eq 'planned service')) {
-        return $next_auto;
+       ($current eq 'planned repair' || $current eq 'planned service')) {
+      return $next_auto;
     }
 
     if ($current eq 'wash performed' ||

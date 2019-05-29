@@ -1,13 +1,10 @@
 use strict;
 use warnings;
-use Test::More tests => 148; #remember to change the skip number below as well!
+use Test::More tests => 142; #remember to change the skip number below as well!
 use Test::Deep;
 use Test::Exception;
 use npg_testing::intweb qw(npg_is_accessible);
 
-local $ENV{NPG_WEBSERVICE_CACHE_DIR} = q[t/data/test45];
-
-{
 use_ok('npg::api::run');
 
 my $do_test = 1;
@@ -17,10 +14,12 @@ foreach my $pa (['test', 'using mocked data'],
                 ['dev',  'using dev'],
     ) {
     diag($pa->[1]);
-    local $ENV{dev}=$pa->[0];
+    local $ENV{dev}=$pa->[0] unless $pa->[0] eq 'test';
+    local $ENV{NPG_WEBSERVICE_CACHE_DIR} = q[];
+    local $ENV{NPG_WEBSERVICE_CACHE_DIR} = q[t/data/test45] if $pa->[0] eq 'test';
 
     if ($pa->[0] eq q[dev]) {
-        $do_test = npg_is_accessible(q[http://npg.dev.sanger.ac.uk/perl/npg]);
+        $do_test = npg_is_accessible(q[http://sf2-farm-srv2.internal.sanger.ac.uk:9010]);
     } elsif ($pa->[0] eq q[live]) {
         $do_test = npg_is_accessible();
     }
@@ -28,7 +27,7 @@ foreach my $pa (['test', 'using mocked data'],
   SKIP: {
 
     if (!$do_test) {
-     skip 'Live test, but sanger intweb is not accessible',  49;
+      skip 'Live test, but sanger intweb is not accessible',  47;
     }
 
     my $run = npg::api::run->new({
@@ -111,20 +110,6 @@ foreach my $pa (['test', 'using mocked data'],
       ok(!$run_lane->is_control, 'not from a control');
       ok($run_lane->is_pool, 'from a pool');
     }
-    {
-      my $run_lane = npg::api::run_lane->new({
-                                          'id_run'   => 4354,
-                                          'position' => 2,
-                                         });
-      cmp_ok($run_lane->manual_qc, q(eq), 'pass', 'QC pass on lane 2 run 4354');
-    }
-    {
-      my $run_lane = npg::api::run_lane->new({
-                                          'id_run'   => 4354,
-                                          'position' => 3,
-                                         });
-      cmp_ok($run_lane->manual_qc, q(eq), 'fail', 'QC fail on lane 3 run 4354');
-    }
 
     {
       my $run = npg::api::run->new({
@@ -138,8 +123,5 @@ foreach my $pa (['test', 'using mocked data'],
 
   } # end of SKIP
 }
-
-}
-
 
 1;

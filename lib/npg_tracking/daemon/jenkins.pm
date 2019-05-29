@@ -1,46 +1,90 @@
-######### 
-# Author:        Marina Gourtovaia
-# Created:       14 December 2012
-#
-
 package npg_tracking::daemon::jenkins;
 
 use Moose;
-use Moose::Util::TypeConstraints;
 use Carp;
-use English qw(-no_match_vars);
 use Readonly;
+use FindBin qw($Bin);
+FindBin::again();
 
+use npg_tracking::util::types;
 extends 'npg_tracking::daemon';
 
 our $VERSION = '0';
 
 Readonly::Scalar our $PROXY_SERVER     => q[wwwcache.sanger.ac.uk];
 Readonly::Scalar our $PROXY_PORT       => 3128;
+Readonly::Scalar our $JENKINS_PORT     => 9960;
 Readonly::Scalar our $TIMEOUT_HOURS    => 6;
 Readonly::Scalar our $MINUTES_PER_HOUR => 60;
 
-subtype 'PositiveInt',
-  as 'Int',
-  where { $_ > 0 },
-  message { "The number you provided, $_, was not a positive number" };
+Readonly::Scalar our $SSH_PK_FILENAME   => q[key.pem];
+Readonly::Scalar our $SSH_CERT_FILENAME => q[server.pem];
+
 
 has 'session_timeout' => ('is'        => 'ro',
-                          'isa'       => 'PositiveInt',
+                          'isa'       => 'NpgTrackingPositiveInt',
                           'required'  => 0,
                           'default'   => $MINUTES_PER_HOUR * $TIMEOUT_HOURS,
                           'predicate' => 'has_session_timeout',
                           'clearer'   => 'clear_session_timeout',);
 
-override '_build_hosts' => sub { return ['sf2-farm-srv2']; };
+override '_build_hosts'    => sub { return ['sf2-farm-srv2']; };
 override '_build_env_vars' => sub { return {'http_proxy' => qq[http://$PROXY_SERVER:$PROXY_PORT]}; };
+
+has 'npg_ssl_home' => ('is'         => 'ro',
+                       'isa'        => 'NpgTrackingDirectory',
+                       'required'   => 0,
+                       'lazy_build' => 1, );
+sub _build_npg_ssl_home {
+  my $self = shift;
+  my $npg_ssl_home = $ENV{'NPG_SSL_HOME'};
+  if (!$npg_ssl_home) {
+    $npg_ssl_home = join q[/], $Bin, q[..], 'wtsi_local';
+  }
+  return $npg_ssl_home;
+}
+
+has 'jenkins_war' => ('is'         => 'ro',
+                      'isa'        => 'NpgTrackingReadableFile',
+                      'required'   => 0,
+                      'lazy_build' => 1, );
+
+sub _build_jenkins_war {
+  my $sub = shift;
+  my $home = $ENV{'HOME'};
+  if (!$home) {
+    croak 'User home is not defined';
+  }
+  return join q[/], $home, q[jenkins.war];
+}
 
 # We assume that $JENKINS_HOME is the same both where the daemon monitor is run and the jenkins server is started.
 override 'command'  => sub {
   my ($self, $host) = @_;
 
-  my $tmpdir = $ENV{'JENKINS_HOME'} ?  "-Djava.io.tmpdir=$ENV{'JENKINS_HOME'}/tmp" : q[];
-  my $command = qq[java -Xmx2g $tmpdir -Dhttp.proxyHost=$PROXY_SERVER -Dhttp.proxyPort=$PROXY_PORT -jar ~srpipe/jenkins.war --httpPort=9960];
+  my $tmpdir = $ENV{'JENKINS_HOME'} ? "-Djava.io.tmpdir=$ENV{'JENKINS_HOME'}/tmp" : q[];
+  my $npg_ssl_home = $self->npg_ssl_home();
+  my $https_cert_path = "$npg_ssl_home/$SSH_CERT_FILENAME";
+  if(! -f $https_cert_path) {
+    croak qq[Path to SSL certificate is not available $https_cert_path.];
+  }
+
+  my $https_key_path  = "$npg_ssl_home/$SSH_PK_FILENAME";
+  if(! -f $https_key_path) {
+    croak qq[Path to SSL private key is not available $https_key_path.];
+  }
+
+  my $socket_opts = sprintf '--httpPort=-1 --httpsPort=%i --httpsCertificate=%s --httpsPrivateKey=%s',
+    $JENKINS_PORT,
+    $https_cert_path,
+    $https_key_path;
+
+  my $command = sprintf 'java -Xmx2g %s -Dhttp.proxyHost=%s -Dhttp.proxyPort=%i -jar %s %s',
+                        $tmpdir,
+                        $PROXY_SERVER,
+                        $PROXY_PORT,
+                        $self->jenkins_war,
+                        $socket_opts;
 
   my $log_name = join q[_], q[jenkins], $host, $self->timestamp();
   $log_name .=  q[.log];
@@ -88,8 +132,6 @@ Metadata for a daemon that starts up jenkins integration server.
 
 =item Carp
 
-=item English
-
 =item Readonly
 
 =back
@@ -104,7 +146,7 @@ Marina Gourtovaia E<lt>mg8@sanger.ac.ukE<gt>
 
 =head1 LICENSE AND COPYRIGHT
 
-Copyright (C) 2012 GRL, by Marina Gourtovaia
+Copyright (C) 2015 GRL
 
 This file is part of NPG.
 
@@ -122,7 +164,3 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 =cut
-
-
-
-

@@ -1,21 +1,34 @@
 package npg_testing::db;
 
-use strict;
-use warnings;
+use Moose::Role;
 use Carp;
 use English qw{-no_match_vars};
-use YAML qw(LoadFile DumpFile);
+use YAML qw(Load Dump);
 use File::Temp qw(tempdir);
 use File::Spec::Functions qw(catfile);
 use Cwd;
-use Moose::Role;
 use Try::Tiny;
 use Readonly;
+
+with qw/npg_tracking::util::db_config/;
 
 our $VERSION = '0';
 
 Readonly::Scalar our $FEATURE_EXTENSION => q[.yml];
 Readonly::Scalar our $TEMP_DIR => q{/tmp};
+
+has 'sqlite_utf8_enabled' =>
+  (is      => 'rw',
+   isa     => 'Bool',
+   default => 0,    # This default preserves current behaviour
+   documentation => 'Enable UTF-8 support for SQLite',);
+
+has 'verbose' =>
+  (is      => 'rw',
+   isa     => 'Bool',
+   default => 1,    # This default preserves current behaviour
+   documentation => 'Print to STDERR information about loading test database ' .
+                    'fixtures.',);
 
 =head1 NAME
 
@@ -27,12 +40,15 @@ npg_testing::db
 
 =head1 DESCRIPTION
 
-A Moose role for creating and loading a test sqlite database using an existing DBIx database binding
+A Moose role for creating and loading a test SQLite database using an
+existing DBIx database binding. The encoding used in the YAML files.
+
+Setting sqlite_utf8_enabled will enable UTF-8 for any temporary SQLite
+database created by the create_test_db method. The UTF-8 setting of
+the MySQL databases used by this class must be configured
+independently.
 
 =head1 SUBROUTINES/METHODS
-
-=cut
-
 
 =head2 rs_list2fixture
 
@@ -69,8 +85,18 @@ sub rs_list2fixture {
         while (my $r = $rs->next) {
             push @rows, {$r->get_columns};
         }
-    }
-    DumpFile(catfile($path,$tname).$FEATURE_EXTENSION, \@rows);
+      }
+
+    my $file_name = catfile($path, $tname).$FEATURE_EXTENSION;
+    my $yml = Dump(\@rows);
+
+    # YAML::LoadFile uses Perl's default non-strict UTF-8 handling. We
+    # want strict handling.
+    open my $out, '>:encoding(UTF-8)', $file_name or
+      croak "Failed to open '$file_name' for writing: $ERRNO";
+    print {$out} $yml, "\n" or croak "Failed to write to '$file_name'";
+    close $out or croak "Failed to close '$file_name': $ERRNO";
+
     return;
 }
 
@@ -90,9 +116,8 @@ ls -l | grep .yml | perl -nle 'my @columns = split q[ ], $_; my $old = pop @colu
 sub load_fixtures {
     my ($self, $schema, $path) = @_;
 
-    if (!$path && !(ref $schema)) {
-        $path = $schema;
-        $schema = $self;
+    if (!$schema) {
+        croak ' should be given';
     }
     if (!$path) {
         croak 'Path should be given';
@@ -104,16 +129,36 @@ sub load_fixtures {
     if (scalar @fixtures == 0) { croak qq[no fixtures found at $path]; }
 
     for my $fx (@fixtures) {
-        my $yml  = LoadFile("$path/$fx");
+        my $file_name = "$path/$fx";
+
+        # YAML::DumpFile uses Perl's default non-strict UTF-8
+        # handling. We want strict handling.
+        my $str = q[];
+        {
+            local $INPUT_RECORD_SEPARATOR = undef;
+
+            open my $fh, '<:encoding(UTF-8)', $file_name or
+              croak "Failed to open '$file_name' for reading: $ERRNO";
+            $str = <$fh>;
+            close $fh or
+              croak "Failed to close '$file_name': $ERRNO";
+        }
+
+        my $yml = Load($str);
         my @temp = split m/[._]/sxm, $fx;
         pop @temp;
         my $table = join q[.], @temp;
         $table =~ s/^(\d)+-//smx;
-        warn "+- Loading $fx into $table\n";
+
+        if ($self->verbose) {
+          carp qq[+- Loading $fx into $table];
+        }
+
         my $rs;
         try {
             $rs = $schema->resultset($table);
-        } catch { #old-style names have to be mapped to DBIx classes
+        } catch {
+            #old-style names have to be mapped to DBIx classes
             ##no critic (ProhibitParensWithBuiltins)
             $table = join q[], map {ucfirst $_} split(/\./smx, $table);
             ##use critic
@@ -130,13 +175,16 @@ sub load_fixtures {
 
 =head2 create_test_db
 
-Creates a temp test database and loads data into it.
+Creates a temp SQLite test database and loads data into it.
 The first argument is a DBIx Schema object full namespace,
 the second is the path to the directory where the fixtures
 are located, the third one is a file name for the temporary
 SQLite database. If the third argument is not given, a randomly
 named file in a temporary directory is used; this file will
 be cleaned up on exit.
+
+Setting the sqlite_utf8_enabled attribute will enable UTF-8 for any
+temporary SQLite database created by the this method.
 
 =cut
 sub create_test_db {
@@ -149,17 +197,25 @@ sub create_test_db {
     ##use critic
 
     if (!defined $tmpdbfilename) {
-       $tmpdbfilename = tempdir(
-         DIR => $TEMP_DIR,
-         CLEANUP => 1,
-       ) . q{/test.db};
-       carp $tmpdbfilename;
+      $tmpdbfilename = q[:memory:];
     }
 
-    my $tmpschema = $schema_package->connect('dbi:SQLite:'.$tmpdbfilename);
+    my $user = undef;
+    my $pass = undef;
+    my $dbattr = {RaiseError => 1};
+
+    if ($self->sqlite_utf8_enabled) {
+      $dbattr->{sqlite_unicode} = 1;
+      if ($self->verbose) {
+        carp q[Enabled UTF-8 support for SQLite];
+      }
+    }
+
+    my $tmpschema = $schema_package->connect('dbi:SQLite:' . $tmpdbfilename,
+                                             $user, $pass, $dbattr);
     $tmpschema->deploy;
     if ($fixtures_path) {
-        $self->load_fixtures($tmpschema,  $fixtures_path);
+        $self->load_fixtures($tmpschema, $fixtures_path);
     } else {
         carp q[Fixtures path undefined in create_test_db];
     }
@@ -168,38 +224,65 @@ sub create_test_db {
 
 =head2 deploy_test_db
 
-Uses existing test database. Drops existing tables and
+Uses existing MySQL test database. Drops existing tables and
 creates new ones. The first argument is a DBIx Schema object
 full namespace, the second (optional) is the path to the
-directory where the fixtures are located.
+directory where the fixtures are located. Requires that
+the configuration file path is supplied by the caller and
+that the dev environment variable is set to test.
+
+Example creating and using a derived class:
+
+ package test_db_user;
+ use Moose;
+ with 'npg_testing::db';
+
+ package main;
+ use test_db_user;
+ local $ENV{'dev'} = 'test';
+ my $test_db_user = test_db_user->new(config_file => '/path/to/file');
+ my $dbix_schema = $test_db_user->deploy_test_db('npg_qc::Schema');
+ my $dbix_schema_with_loaded_fixtures =
+   $test_db_user->deploy_test_db('npg_qc::Schema', '/path/to/fixtures_dir/');
+
+Example creating and using an anonymous class:
+
+ use Moose::Meta::Class;
+ use npg_testing::db;
+ local $ENV{'dev'} = 'test';
+ my $test_db_user = Moose::Meta::Class->create_anon_class(
+         roles => [qw/npg_testing::db/])
+         ->new_object({ config_file => '/path/to/file',});
+ my $dbix_schema = $test_db_user->deploy_test_db('npg_qc::Schema');
 
 =cut
 sub deploy_test_db {
-    my ($schema_package, $fixtures_path) = @_;
+    my ($self, $schema_package, $fixtures_path) = @_;
 
-    if (!$ENV{dev} || $ENV{dev} ne 'test') {
-      ##no critic (RequireInterpolationOfMetachars)
-      croak '$ENV{dev} should be set to "test"';
-      ##use critic
+    if (!$ENV{'dev'} || $ENV{'dev'} ne 'test') {
+        croak 'dev environment variable should be set to "test"';
+    }
+    if (!$self->has_config_file) {
+        croak q[Configuration file path is not set];
     }
     if (!$schema_package) {
-      croak q[Schema package undefined in create_test_db];
+        croak q[Schema package undefined];
     }
 
     ##no critic (ProhibitStringyEval RequireCheckingReturnValueOfEval)
     eval "require $schema_package" or do { croak $EVAL_ERROR;} ;
     ##use critic
 
-    my $schema = $schema_package->connect();
+    my $schema = $schema_package->connect($self->dsn, $self->dbuser, $self->dbpass, $self->dbattr);
     $schema->deploy({add_drop_table => 1});
     if ($fixtures_path) {
-       load_fixtures($schema,  $fixtures_path);
+        $self->load_fixtures($schema, $fixtures_path);
     } else {
         carp q[Fixtures path undefined in create_test_db];
     }
+
     return $schema;
 }
-
 
 no Moose::Role;
 1;
@@ -213,10 +296,6 @@ __END__
 =head1 DEPENDENCIES
 
 =over
-
-=item warnings
-
-=item strict
 
 =item Moose::Role
 
@@ -234,6 +313,8 @@ __END__
 
 =item Try::Tiny
 
+=item npg_tracking::util::db_config
+
 =back
 
 =head1 INCOMPATIBILITIES
@@ -246,7 +327,7 @@ Marina Gourtovaia E<lt>mg8@sanger.ac.ukE<gt>
 
 =head1 LICENSE AND COPYRIGHT
 
-Copyright (C) 2010 GRL, by Marina Gourtovaia
+Copyright (C) 2015 GRL by Marina Gourtovaia
 
 This file is part of NPG.
 

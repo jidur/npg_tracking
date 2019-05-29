@@ -17,6 +17,7 @@ our $VERSION = '0';
 
 Readonly::Scalar my $STRAIN_ARRAY_INDEX => 1;
 
+
 has 'bait_name'     => ( isa => q{Maybe[Str]}, is => q{ro}, lazy_build => 1,
                         documentation => 'Bate name',);
 sub _build_bait_name {
@@ -46,8 +47,9 @@ sub _build_bait_path {
   }
   if (scalar @refs > 1) {
     ##no critic (ProhibitParensWithBuiltins)
-    croak 'Multiple references returned: ' . join(q[ ], @refs);
+    $self->messages->push('Multiple references returned: ' . join(q[ ], @refs));
     ##use critic
+    return;
   }
   my $reference = $refs[0];
   my $repository = $self->ref_repository;

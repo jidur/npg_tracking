@@ -1,5 +1,557 @@
+LIST OF CHANGES
+
+release 88.2.1
+ - patch to accommodate different URL info passed to the CGI
+   module by different Apache httpd versions
+
+release 88.2
+ - scripts to list run folders that are candidates for deletion in
+   the Data Recovery area
+ - status monitor: improved logging, which now shows timestamps
+ - alleviate differences in cloud hosts time zone configuration by
+   storing UTC offset as a part of the timestamp in serialized
+   run and lane status objects
+
+release 88.1.1
+ - test data fixes following ml warehouse schema changes, see
+   https://github.com/wtsi-npg/ml_warehouse/pull/104 for details
+
+release 88.1
+ - status monitor running with inotify disabled should be able to
+   recognise when a cached file is changed
+ - 2 sec sleep introduced in the beginning of the job that saves
+   statuses to a file to ensure no two statuses of the same run/lane
+   have the same timestamp so that the iscurrent db flag could be
+   assigned inambigiously when the statuses are saved to a database
+
+release 88.0
+ - tracking database:
+     add column `incompatible_tag` to the tag table;
+     populate `incompatible_tag` column with values previously
+       hardcoded in a DBIx class;
+     add tags for instrument workflow;
+     simplify code in DBIx classes for setting and unsetting tags;
+     drop requirement for a valid user id when unsetting a tag;
+     drop a check for tag existence when unsetting a tag
+ - staging monitor to set/fix tracking db record about instrument side and
+   workflow type by setting/resetting appropriate run tags
+ - Change staging area monitor so for NovaSeq runs, both CopyComplete + RTAComplete
+   or RTAComplete + max waiting time must be true before a run can be considered
+   copy complete.
+
+release 87.4
+ - changes to support geno_refset repository
+ - moved method for creating full file names from npg_tracking::product
+   to the moniker role
+ - extension of the composition/component serialization role to ensure that the
+   serialised objects can be deserialized
+ - tracking server run page links to run folder locations:
+     'Latest Analysis' and 'Latest IVC' links removed since the target files
+     are no longer generated;
+     'Tileviz' link is updated to point to a location in the new-style runfolder
+ - 'locate_runfolder' cgi script:
+     code to handle redundant links and paths is removed;
+     if the target tileviz directory is not available, fall back to the one
+     expected for the old-style run folder
+ - redundant filename method of the illumina component object removed
+ - status monitor:
+     two modes - with and without inotify;
+     option to set the prefix from command line so that multiple monitors
+       could potentially run on the same host, each monitor dealing with
+       its own staging area;
+     avoid repeatedly saving the same statuses
+ - when searching snv_path use bait_name=Exome for (cD|R)NA library types
+ - tracking database: 
+     add a unique db constraint for all types of status descriptions;
+     make temporal_index column in run_status_dict table non-nullable and
+     add a unique constraint on it;
+     simplify DBIx binding for statuses;
+     add a method for temporal comparison of run statuses
+
+release 87.3
+ - for a run on ESA, redirect to an ESA url
+
+release 87.2
+ - added method to find file with MT genes inside transcriptome repository
+ - change attributes in transcriptome-find to use lazy and builder rather than
+   lazy_build to conform with Moose's best practices
+ - sequencing instrument checker:
+     treat error reading a recipe file as non-fatal;
+     adjust warning message generation to use methods supported by the poller
+     object instance
+ - a new factory method, create_tag_zero_object, to create st::api::lims object
+   for tag zero
+ - a new factory method, aggregate_xlanes, to create a list  of st::api::lims
+    objects for merges across lanes
+
+release 87.1
+ - bug fix in JavaScript for run creation - the reflector cannot
+   be used any longer, allow client side JS to request XML feeds
+   directly from LIMs server
+
+release 87.0
+ - new role - file and directory naming factory
+ - added bin/npg_move_runfolder script
+ - make NovaSeq instruments represented on web pages
+ - removing reflector allow client side JS to request XML feeds directly from LIMs server
+ - use lims_url config file entry to set LIMs server location
+ - gseq cluster hoop jumping for test 10-gbs_plex.t
+ - use 'fasta' as default aligner when searching for references
+ - long_info role:
+     when parsing RunInfo.xml look for FlowcellLayout rather than version,
+     remove unused methods and attributes,
+     use run parameters file to retrieve additional information
+
+release 86.10.1
+ - following changes to npg_tracking::illumina::run::short_info role,
+   patch staging monitor, which started to fail if run id could
+   not be retrieved
+ - other changes to staging monitor:
+     improve reporting
+     change the order when validating run folders, will try
+       to retrieve run id first, then validate the name
+     propagate db schema handle
+     use db schema accessor that is used by npg_tracking::illumina::runfolder
+       and its roles
+     remove custom code where existing APIs can be used
+
+release 86.10
+ - the bug in paged run views where a particular instrument was selected
+     is fixed
+ - the frame height for displaying runs on an instrument page is increased
+ - displayed instrument statuses in the instrument view are limited
+     to most recent (created within a year from the current date)
+ - npg_tracking::illumina::runfolder is simplified at a cost of losing
+   ability to pass to the constructor an arbitrary path
+ - npg_tracking::illumina::run::short_info role - added database
+   look-up aided ability to deal with arbitrary run folder names
+ - use icons from the latest set of brand images
+ - display institute's logo and favicon only if pages are served
+     from institute's servers
+ - removed unnecessary aliasing of urls
+ - deleted unused (dif_files_path and pb_cal_path) runfolder accessors
+ - method to find file with globin genes inside transcriptome repo added
+ - changes to support gbs_plex repository
+
+release 86.9
+ - to account for ephemeral staging areas on OpenStack, extend staging
+   directory path match expression in Apache httpd config file
+ - use bash shell when executing system calls from Perl
+ - copied srpipe::runfolder module (from SVN data_handling package)
+   as npg_tracking::illumina::runfolder to this package, removed tests
+   that depended on test folder hierarchy in the data_handling package
+
+release 86.8
+ - remove redundant script for reporting sequencing failures to RT
+ - remove uptime info from instrument page - function no longer available
+ - correct handling of transition from 'down for service' to 'down for repair'
+
+release 86.7
+ - stop building on Travis under Perl 5.16,
+   see https://rt.cpan.org/Public/Bug/Display.html?id=123310
+ - reference find role: when parsing a genome reference string
+   return the analysis, along with the organism, strain
+   and transcriptome version, if present
+ - refactor transcriptome::find to improve code reuse and add
+   new find file/path/index attributes and functionalities
+ - when inflating rpt key, cast id_run, position and tag index
+   (if any) values to integers and raise an error if conversion
+   gives a warning
+ - unused tracking server features removed:
+     simultaneous status update for multiple runs;
+     simultaneous status update for multiple instruments;
+     simultaneous mod update for multiple instruments;
+     XML feeds for individual run statuses with listing of
+       all runs at this status;
+     flowcell verification;
+     complex computation of width of padding id_run in run name
+       for display purposes
+
+release 86.6
+ - unused db tables, which were renamed in the previous release,
+     are dropped; exclusions in teh DBIx class loader script removed
+ - Jenkins daemon - a bug in locating prod ssl server certificates fixed
+ - added a convenience factory class to transform rpt list strings
+   into a composition
+
+release 86.5
+ - small fix in locate_runfolder for rna seqc links
+ - remove unused classes for image generation
+ - be compatible with ClearPress version 475.3.3 and above
+ - set explicit dist to precise in travis yml
+ - add dual configuration for apache mpm worker/event
+ - Jenkins' daemon with HTTPS as default configuration
+ - drop or rename orphaned tables from db
+   - drop
+     cost_code
+     cost_group
+     sensor_data_instrument
+     sensor_data
+     sensor_instrument
+     sensor
+     mail_run_project_followers
+   - rename
+     event_type_service to todrop_event_type_service
+     ext_service to todrop_ext_service
+     event_type_subscriber to todrop_event_type_subscriber
+
+release 86.4
+ - reference find role: remove unused 'subset' attribute and
+   previously deprecated 'single_ref_found' method
+ - increate http tmeout for event notification
+ - run tracking server on two ports - one accepting http traffic, another
+   one https only; the same set of URLs on both ports
+ - tracking web GUI link to request LIMs page now changed to point to
+   a more useful lane page; request id will not be available if XML
+   LIMs feeds are discontinued
+ - link to auth script residing in the same virtual host
+ - sensor-related code removed
+ - mkfastq option added to make a samplesheet suitable for 10x mkfastq
+
+release 86.3
+ - event notification - do LIMs notification first; if it fails and is run
+     multiple times as a consequence, users are not spammed
+
+release 86.2
+ - event notification:
+     use faster ml warehouse st::api::lims driver (ml_warehouse_fc_cache)
+     find templates directory relative to the running script bin
+     fix npg tracking server url in reports' text
+     filter out undefined email addresses
+     bug fixes
+ - remove models for db tables that are due to be dropped
+ - update apache conf so server run with 1 thread/child w/mpm_worker_module
+   Config::IniFiles used by ClearPress::util does not seem to be thread safe
+ - replace image generation/manipulation routines by a stub
+   returning a simple static image (these routines are used
+   in npg_qc in web pages that are no longer used).
+ - st::api::lims helper over boolean values for a pool fixed to work
+   correctly for compositions
+
+release 86.1
+ - update models, droping cost code and cost group
+ - updating templates to remove broken R&D watermark based on cost_code
+ - deleting fixtures and tests for cost code and cost group
+ - under modperl information about request url is not available in
+   env. variables; now getting it directy from the CGI module
+ - when possible, any subsequent requests should go to the server
+   from which the original page was served (makes sense in general
+   and helps to set up proper dev environment)
+ - web pages - drop buttons linking to non-existing pages
+
+release 86.0
+ - httpd config files for httpd v.2.4.23 and mod-perl v.2
+ - simple uptime report for Illumina sequencing instruments
+ - reinmplementation of events reporting
+ - timing of emails to followers is changed from statuses
+   'run complete' and 'run archived' to 'qc review pending' and 'qc complete'.
+ - ClearPress library is pinned to v. 473.0.5
+
+release 85.6
+ - code and tests changes to reduce number of warnings under Perl 5.22.2
+ - use mysql 5.7.13 in travis (installing from deb)
+ - Run web page
+   - removed image browser link
+   - Add EBI submissions link
+ - Build.PL fix to ensure that images under htdocs dir are copied to blib
+   when building.
+ - updated links to NPG QC since the pages moved to SeqQC
+
+release 85.5
+ - removed all code that relates to instrument utilisation
+ - removed an option to create database entries via XML POST.
+ - removed custom error view
+ - deleted special privisions for the 'pipeline' user
+ - removed unused xml views for run lists
+ - Install all files, including cgi-related, within the install action.
+ - Remove instrument utilisation views for web pages.
+ - Deprecate 'request approval' instrument status, enable status change
+   from either of down statuses directly to 'wash required'.
+ - Remove code and tests for deprecated instrument statuses.
+ - Create flags to mark users and usergroups as deprecated,
+   deprecate 'approvers' group.
+ - User and usergroup lists are alphabetically sorted and include only
+   current entries.
+ - Fixed instrument status menu for batch updates to display only
+   current statuses.
+ - Composition-enabled LIMs object and reference finder.
+ - Subset support added to the rpt key based composition factory.
+ - Objects's attributes based composition factory sets only those components
+   that are either defined or required. Previously an undef value might
+   have been used for a component attribute even if the value did not have
+   to be set, i.e. the code was not future compatible with planned removal
+   of 'Maybe' qualifies from the tag_index and subset definition.
+
+release 85.4
+ - Run/instrument tracking; added full support for HiSeq 4000 and limited support
+   for NextSeq and MiniSeq
+ - Add HiSeq 4000 to graphical instrument list
+ - Limit menu for changing run status, when not analyst, to those on instrument
+ - Composition framework - the composition object becomes immutable as long
+   as its components are immutable.
+     - Functionality for an incremental assembly of a composition moved to
+       a generic composition factory.
+     - Empty compositions are not allowed.
+     - Composition constructor returns a sorted composition.
+     - Public sort function is removed.
+ - Composition - find is implemented as a binary search.
+
+release 85.3
+ - Add deployment to GitHub Releases
+ - In order to have correctly versioned files in a distribution,
+     changed the builder base class.
+ - Travis conf update to pre-load perl-dnap-utilities from github.
+ - Samplesheet daemon:
+     fixed logger;
+     changed reference repository root so that it can be run on a staging host.
+ - Changes to handle a different number of tiles in each lane
+ - Increased TAG_INDEX_MAX to 9999 to handle pools with >999 samples
+
+release 85.2
+ - Added 'sample_accession_numbers' to lims shim
+ - Deprecated old accessors for qc outcomes.
+
+release 85.1
+ - Added 'purpose' to lims shim
+ - utf8 option for test sqlite db
+
+release 85.0
+ - lims shim
+   - endeavours to ensure consistency of primary info (e.g. id_run, position)
+     with drivers
+   - will pass through arguments to driver constructor if it takes them
+
+release 84.12
+ - composition and component serialization to rpt
+
+release 84.11
+ - Operations (inflation and deflation) on rpt strings and their hash
+   representation and lists of rpt values (based on npg_qc::autoqc::role::rpt_key)
+ - Factory to create composition from a string representation of an rpt list
+ - New filename method for the illumina component
+ - Alter "run complete" email alert text to make clear analysis and qc time
+
+release 84.10
+ - create multi-attribute methods automatically
+ - added method st::api::lims::any_sample_consent_withdrawn
+ - removed potential warnings in event notification RT#495946
+
+release 84.9
+ - transcriptome find updated for RNA-SeQC directory and its gtf file
+ - generic serializable sequence composition framework and illumina
+   sequencing specific component
+ - lims shim now works out driver type from a given driver
+ - sequencing failure RT emails cope with GCLP (no batch_id)
+ - add predicates for glossary roles
+
+release 84.8
+ - jenkins daemon definition: remove hardcoded path to prod user home directory
+ - refactor snv finder to stop warnings when ref genome is undefined RT#481506
+ - make function for parsing reference gemone public since it is used outside
+   of the module where it is defined
+ - use RTAComplete file in fallback local (instead of ftp) determination of run
+   progress (which is consistent with ftp process and required for HiSeqX)
+
+release 84.7
+ - accommodate LIMs-defined dual indexes
+ - Illumina samplesheet generation: do not truncate single index when shorter first
+     part of dual index is present; this was written with spiked Phix in mind,
+     however, spikes are not reflected in LIMs for MiSeq runs
+
+release 84.6
+ - when changing ownership of run folder, set gid bit on every level
+ - reporting croaks without full stacktraces for folder and folder/location
+ - daemon control:
+     do not use deprecated load_class method
+     read a list of production users from a configuration file
+
+release 84.5
+ - staging monitor extension:
+     move qc complete runfolders from analysis to outgoing
+     propagate group ownership inside the runfolder
+ - staging/instrument monitor:
+     remove superfluous run lanes
+     assume all runs are RTA
+ - perform runfolder name validation against the tracking db run record
+   rather than against xml feeds; compare to expected runfolder name
+   if this name is not in the database yet
+ - add sample_supplier_name, sample_cohort and sample_donor_id to
+   st::api::lims interface
+
+release 84.4
+ - to avoid the need to create deep directory hierarchy containing www-live
+   for a live server, set dev env variable value for the Apache server
+   explicitly
+
+release 81.3
+ - accessor methods for frequently used configuration file entries
+ - status monitor script and staging area daemon definition - allow for
+   farm-specific variations of path prefixes for staging areas
+ - staging area and status daemons use common log directory /nfs/{gs|sf}XX/log
+
+release 81.2
+ - web server configuration generalisation to allow for running on
+   different clusters
+ - cross-cluster staging links for both tracking and seqqc links
+ - make sample name compalsory in samplesheet generation
+ - provide path substitution mechanism to cope with running code on a file
+   server where the abs_path may differ from the cannonical network path.
+
+release 81.1
+ - extended samplesheet contains only the Data section, Illumina
+   on-instrument reference paths removed
+ - factor out parsing database configuration files into a separate
+   module
+ - when using MySQL database in testing, do not use database configuration
+   files implicitly from the user's home directory; force the caller to
+   supply the location of the file
+ - remove default repository root from npg::samplesheet
+ - no longer stop runs without batch id or with 13-digit entries in the
+   batch id field from moving from run mirrored to analysis pending (
+   allows automatic analysis of GCLP and QC runs reespectively).
+ - optionally change group ownership of certain analysis directories on
+   moving runfolder form incoming to analysis
+
+release 81.0
+ - remove default config file
+ - allow environment variable NPG_REPOSITORY_ROOT to set repository root
+ - move config of staging areas and repository into a config file
+ - remove vestigial code for dealing with manual qc state
+ - remove good_bad column in run_lane table
+ - remove manual_qc_status table
+ - npg daemon 'local' host option avoids ssh
+
+release 80.11
+ - removed staging area sf48
+
+release 80.10
+ - default to in-memory option for SQLite in tests
+ - added a method to transparently return live or dev LIMs base URL
+ - reference genome values - trim white space
+
+release 80.9
+ - do not try to infer phix reference from library/sample name
+ - correct regular expression for modern MiSeq reagent kits - previously
+   part of the id starting from teh dash was not returned by the flowcel_id accessor
+   in the short_info role
+ - samplesheet generation: library id shoudl be defined for all samples
+
+release 80.8
+ - fix memory leak in the samplesheet driver for st::api::lims -
+   pass data hash by reference
+
+release 80.7
+ - change reference repository host
+
+release 80.6
+ - reenable and clean up cBot monitoring
+ - try to avoid recursion in st::api::lims
+ - cope with no reference genome info in XML
+ - provisions for ml_warehouse driver
+ - change host for development tracking server
+ - when building the package, change version in existing directories only
+
+release 80.5
+ - remove redundant status update method from DBIx run_lane table binding
+ - remove unused methods from npg::api::xx objects
+ - remove auto-change of run statuses RT#420151
+ - status monitor enhancements RT#420193:
+     cope with runfolder move from outgoing to analysis
+     on detecting LatestSummary creation, check for existing status files
+       in the status folder
+
+release 80.4
+ - list of staging areas updated
+ - reset monitor to use local disk if FTP to instrument fails
+
+release 80.3
+ - report sample_name, library_id etc at pool level if non-spike children
+   give same value (to better cope with single plex pools)
+
+release 80.2
+ - cope with old path being reported for a directory when it is moved
+
+release 80.1
+ - glob expression fix for running on Ubuntu lucid with perl 5.14.2
+
+release 80.0
+ - DBIx run and run-lane status update: ensure duplicate records are not created
+     allow to create a record for a status that is already current if the date
+     of the new record is earlier that the current status date
+ - status monitor bug fixes
+ - daemon for status monitor watcher
+ - propagate child/plex library level study data "alignment_in_bam" and
+   "separate_y_chromosome" to parent lane level as is done with
+   "contains_nonconsented_human" data
+
+release 77.9
+ - DBIx run and run-lane status update refactoring to accommodate passing
+     status date and make setting these two status types symmetrical
+ - initial code for monitoring status files
+ - bug fix in inferring recalibrated path from the runfolder path - previously
+     the code returned basecalls directory path before getting to the recalibrated path
+ - following psd dev url change, update regular expression in the reflector url filter
+
+release 77.8
+ - npg dev url is set to the url of the dev server that is actually used for API calls
+ - psd next release dev url replaced with training url, RT#412417
+ - wrapper object for the status and a script to write status to a file
+ - dual index refinements: ensure max length of "Index" used by MiSeq is the split
+ - dual indexes' size, and use custom default_expected_tag in preference to Index{,2}
+   when using samplesheet as source of LIMS info
+ - ensure samplesheet testing works without WTSI filesystem
+ - instrument location tests skipped if host name is too long
+     (TODO - increase db field size)
+ - travis ci configuration file added
+ - mysql db test configuration - password removed so that this configuration
+     can be used on travis ci
+ - implicit dependency on DBD::mysql driver made explicit to ensure all
+     dependencies are built on travis ci server
+
+release 77.7
+ - run in progress tracking:
+     look for lane sub-directories in the BaseCalls directory if none found in the Intensities directory;
+     check for existence of a RTAComplete.txt file rather that a ImageAnalysis_Netcopy_complete_Read#.txt file
+
+release 77.6
+ - added code to generate HiSeqX runfolder names
+ - updated list of directories to search for cycle sub-directories
+
+release 77.5
+ - added new version value for HiSeqX RunInfo.xml
+
+release 77.4
+ - changed list of top level directories for HiSeqX
+
+release 77.3
+ - samplesheet creation now supports dual indexes
+ - sensor.pm now uses npg::api::request to allow for caching xml feeds when
+   retrieving sensor data
+ - web app and database adjustments for HiSeqX
+ - callbacks for uptime graphs removed
+ - removed the uptimes table from the textual listing of intruments page -
+     made page loading very slow
+ - removed upgrade schema scripts and redesign proposal file from MANIFEST
+ - merged instrument checker scripts for all existing sequencing instrument types
+ - removed instrument checker scripts for invividual seq instrument types
+ - all instrument checkers to use local libraries if available
+
+release 77.2
+ - ensure module and package version starts with a digit
+ - npg_tracking::illumina::run::folder and its tests updated; the following accessors removed:
+       data_path (unused from outside),
+       tag_qseqs_path (redundant),
+       score_path (redundant),
+       qseq_location_path (redundant);
+     tests specific for old illumina mashines (IL) removed;
+     unused analysis_path accessor reimplemented to point to the top-level custom analysis folder
+       paths from analysis_path removed;
+     definitions of most paths placed together
+     public write accessors for bam_basecall and dif_files paths since they are used from the pipeline,
+       old private accessors retained for backwards compatibility
+
 release 77.1
- - transcriptome changed so that a default is not used if not supplied 
+ - transcriptome changed so that a default is not used if not supplied
  - transcriptome version directory changed so tests changed accordingly
  - reference find changed to handle transcriptome version parsing
  - unused templates removed
@@ -39,7 +591,7 @@ release 76.4
  - some unused code removed
  - some small test scripts merged into related larger test scripts
  - VERSION variable and headers with SVN properties removed from test files
- - all test scripts are given .t extension 
+ - all test scripts are given .t extension
  - unnecessary 'use' statements removed from tests
  - server-wide definition for modperl custom perl libraries location in order
    to provide consistent perl environment for all scripts at server start-up
@@ -67,15 +619,15 @@ release 76.0
      wider tests to be performed if NULL needs to be used
  - id_run_pair defaults to null; examining and setting this field removed
      from the code, the concept of run-pair has not been used for a long time
- - use ${JENKINS_HOME}/tmp instead of /tmp for jenkins tmpdir 
- - add perlcritic policy to prohibit tabs, convert tab to two white space, correct 
+ - use ${JENKINS_HOME}/tmp instead of /tmp for jenkins tmpdir
+ - add perlcritic policy to prohibit tabs, convert tab to two white space, correct
    indentation issues
  - old and unused apache configuration files removed
  - IL instruments removed from instrument utilisation menu (we do not have them any more)
  - instrument uptime menu link removed - target graph is broken
  - consolidated all instrument menu 70* tests in one 20 test
  - removed code repetition from bin/ga_II_checker
- - removed depricated last_30_days method from npg::model::instrument_utilisation
+ - removed deprecated last_30_days method from npg::model::instrument_utilisation
  - fixed the code where in test conditions operations on undefined variables
    were performed
  - removed excessive verbosity in most of the tests
@@ -92,7 +644,7 @@ release 75.6
  - fixed occasional authentication problem (inability of a particular thread to load
    additional modules due to the fact that on a second invocation of npg script in the
    same server thread @INC array is not extended since BEGIN block is not run) when
-   running under apache2.2 by extending the server @INC array at server start up time 
+   running under apache2.2 by extending the server @INC array at server start up time
  - bam, cram, etc files access is prohibited from the runfolder directories listings,
    however, these files are visible in listings
  - more convenient sorting order of directories and files in the runfolder directories
@@ -131,7 +683,7 @@ release 75.1
  - patch for samplesheet parser
  - switch live npg api base URL to a different host in order to separate
      human- and api-driven requests
- - removed depricated methods from npg::api::run_lane
+ - removed deprecated methods from npg::api::run_lane
  - removed unused save2cache method from npg::api::util
  - simplified logic for saving to cache in npg::api::request;
      removed unused save2cache method
@@ -179,7 +731,7 @@ release 74.8
  - switch to scratch110 for references while scratch109 is down
 
 release 74.7
- - deal with EAN13 barcode - put in batch_id field for now and allow creation of 
+ - deal with EAN13 barcode - put in batch_id field for now and allow creation of
    samplesheet using warehouse lims driver
  - separate_y_chromosone_data available in lims
  - samplesheet driver for lims object
@@ -193,7 +745,7 @@ release 74.6
  - add new staging area (51)
 
 release 74.5
-- order run_status_dict by temporal_index to display in Runs horizontal panel.  
+- order run_status_dict by temporal_index to display in Runs horizontal panel.
 - restrict statuses in menu for status editing to the statuses after the current status for all users
   other than those in the new analyst group, who can see all statuses.
 
@@ -331,10 +883,10 @@ release 72.4
 - Makefile.PL file replaced with Build.PL that can build all dependencies from scratch
 - db fixtures updated (NULLs removed)
 - possible to use local mysql test database without having socket specified in the
-  mysql configuration file 
+  mysql configuration file
 
 release 72.3
-- a fix to instrument uptime as exposed in xml feeds RT#301282: npg uptime numbers correct? 
+- a fix to instrument uptime as exposed in xml feeds RT#301282: npg uptime numbers correct?
 
 release 72.2
 - illumina sequencing failures ticket figures out what to do if no id_run option is given RT#161876
@@ -347,7 +899,7 @@ release 72.0
 - decription key is taken from the relevant portion of the config. file
   rather than from the live section
 - changes to run under perl 5.14.2 and updated Moose, in particular, coping with variations in Moose error messages
-- staging monitor bug fix for getting file modification time    
+- staging monitor bug fix for getting file modification time
 - iscurrent flag for both instrument and run statuses
 - four new statuses for instrument, 'planned repair', 'down for repair',
   'planned service', 'down for service', replacing 'down' and 'planned maintenance'
@@ -386,13 +938,13 @@ release 71.0
 
 release 70.4
 - cope with V2 MiSeq reagent kits in samplesheet generation
- 
+
 release 70.3
 - typo fix - space between batch id and .xml extension in javascript
 
 release 70.2
 - npg tracking test server config and README removed; see the configuration in sflogin svn project
- 
+
 release 70.1
 - sample consent_withdrawn method added
 - svn::executable ON property set for scripts in cgi-bin pending tracking server deployment on sfweb
@@ -435,21 +987,21 @@ release 69.0
 
 release 68.2
 - Unused npg tracking db tables deleted: entity2reference_sequence, reference_sequence, project;
-- Unused columns deleted from the run_lane npg tracking db: auto_analyse, id_project; 
+- Unused columns deleted from the run_lane npg tracking db: auto_analyse, id_project;
 - Run table changes: column 'is_dev' is dropped, a new column 'team' is created to associate teams with a run. Where id_dev column had 1, the 'team' column has 'RAD', otherwise the value is 'joint';
 - DBIx binding, ClearPress models, views and templates and npg::api updated accordingly
 - DBIx binding: create and search cbot runs removed
 - new run page redesigned; instrument type detection by javascript on this page improved
-- team selection drop-down list on a new page list 
+- team selection drop-down list on a new page list
 
 release 68.1
 - create run page javascript bug fix
 
 release 68.0
 - rebalanced the code in st&npg::api::base and ::util onjects; st::api::util object removed
-- depricated and unused code removed from st and npg apis, tests adjusted accordingly
+- deprecated and unused code removed from st and npg apis, tests adjusted accordingly
 - old test data for st package removed
-- tests refactored to exclude depricated calls and make use of test useragents transparent
+- tests refactored to exclude deprecated calls and make use of test useragents transparent
 - cgi script for e-mailing annotations removed
 
 release 67.1
@@ -487,13 +1039,13 @@ release 65.1
 release 65.0
 - st::api modules
     passing around st_cache attribute is removed
-    some additional methods depricated
+    some additional methods deprecated
 - npg tracking web app:
     npg::util - st_cache and useragent accessors removed
-    depricated module npg::graph removed 
+    deprecated module npg::graph removed
     own decorator object is used instead of SangerWeb; no dependency on SangerPath
     app version number is taken from npg::view instead of npg::controller
-    /nfs/WWWdev/SHARED_docs/lib/core dependency retained in npg::view object for SSO and LDAP access, but the code runs OK if any of these modules is unaccessible 
+    /nfs/WWWdev/SHARED_docs/lib/core dependency retained in npg::view object for SSO and LDAP access, but the code runs OK if any of these modules is unaccessible
 - documentation and files for running stand-alone apache tracking service are in t/test_server
 - dependency on SangerPath and SangerWeb removed from tests
 - npg::email tests that were sending live updates fixed
@@ -515,7 +1067,7 @@ release 64.0
 release 63.4
 - npg::email and illumina qc failures script for creating RT tickets use st::api::lims now; RT#241274
 - link to SeqQC on analysis in progress RT#245662
-- depricated module st::api::run removed
+- deprecated module st::api::run removed
 
 release 63.3
 - a date-related bug in the 10-model-run_status.t test fixed
@@ -535,29 +1087,29 @@ release-63.0
 
 - npg::api::project object removed
 - npg::api::run module:
-    ->batch accessor is depricated
+    ->batch accessor is deprecated
     ->lims accessor created insted
 - npg::api:run_lane module:
     ->lims, ->is_pool, ->is_library, ->is_control methods added;
-    previously depricated ->stproject_id, ->stproject_name, ->sample, ->project methods removed;
+    previously deprecated ->stproject_id, ->stproject_name, ->sample, ->project methods removed;
     ->id_project field removed;
-    ->asset, ->library, ->pool, ->control, ->entity, ->st_lane methods made depricated;
+    ->asset, ->library, ->pool, ->control, ->entity, ->st_lane methods made deprecated;
     ->is_spiked_phix, ->asset_id, ->contains_unconsented_human, ->manual_qc methods are refactored to use npg::api:run_lane->lims method;
 - st::api::request module:
-    previously depricated ->libraries method removed
-    ->project method marked as depricated
+    previously deprecated ->libraries method removed
+    ->project method marked as deprecated
 - st::api::sample module:
-    previously depricated ->project ->workflow_samples methods removed
-- st::api::run module marked as depricated
-- st::api::lane module  as a whole is depricated
-    previously depricated ->sample method removed
-    all methods marked as depricated
+    previously deprecated ->project ->workflow_samples methods removed
+- st::api::run module marked as deprecated
+- st::api::lane module  as a whole is deprecated
+    previously deprecated ->sample method removed
+    all methods marked as deprecated
 - st::api::batch:
-    methods ->batches, ->batches_released_cluster, ->lane_count, ->lanes marked as depricated
+    methods ->batches, ->batches_released_cluster, ->lane_count, ->lanes marked as deprecated
 - st::api::asset module:
-    previously depricated methods ->workflow_sample, ->libraries, ->projects, ->project removed
-    methods ->required_fragment_size, ->studies, ->reference_sequence, ->organism, ->study, ->study_name, ->sample marked as depricated
-- st::api::tag module is depricated, all methods marked as depricated
+    previously deprecated methods ->workflow_sample, ->libraries, ->projects, ->project removed
+    methods ->required_fragment_size, ->studies, ->reference_sequence, ->organism, ->study, ->study_name, ->sample marked as deprecated
+- st::api::tag module is deprecated, all methods marked as deprecated
 - refactoring of some tests to use the web cache where possible
 - update schema scripts moved to scripts/upgrade_schema directory
 - some unused scripts removed from the scripts directory: runs_for_casproject, api-demo-project, project_finder, api-demo-stproject, report_q_values_to_sequencescapeprojects
@@ -673,10 +1225,10 @@ release-54.3
 
 release-54.2
 - following a change in live data, 45 test fixed
-- tests for phix reference that use a depricated method removed from 45 test
+- tests for phix reference that use a deprecated method removed from 45 test
 - some tests that compare DateTime object to a string data fixed by stringifying the object explicitly
 - added blocking_runs method and  mapping of hiseq slots to blocking runs for the instrument model
-- possible to create a new hiseq run if there is a run-complete run in a slot 
+- possible to create a new hiseq run if there is a run-complete run in a slot
 
 release-54.1
 - spiked tag part of batch xml parsing extended to allow for reference finder to deal with it
@@ -794,7 +1346,7 @@ release-42.0
  - add buttons for each isnturment status to annotate them
  - cycle count and current_ok fields added to run annotation
  - new st api study calss, the same class as old project class
- - depricated some methods in st api project and transfer the calls to the corresponding study if the sequencescape api version newer than 0.5
+ - deprecated some methods in st api project and transfer the calls to the corresponding study if the sequencescape api version newer than 0.5
  - fix summer-time error in annotation creation time-stamps
  - move planned maintenance instrument to down on run cancelled as well as run complete - RT167177
  - Add latest_contact column (DATETIME type) to instrument table
@@ -813,7 +1365,7 @@ release-41.0
 release-40.0
  - add a having_control_lane method in api run
  - methods to get organism-related info about a sample
- - depricated st::api::sample::reference_sequence
+ - deprecated st::api::sample::reference_sequence
  - added required_fragment_size method to an asset object
  - add utility script to create tickets for failed lanes
  - add email infrastructure to email run complete etc to contact found via Sequencescape
@@ -831,8 +1383,8 @@ release-37.0
  - instruments' utilisation info for 90 days
  - re-styled menu for instruments
  - 'Instrument Formats' pag unlinked from the top level menu and linked to the Instruments menu
- - npg::graph object made depricated
- - npg::model::instrument_utilisation->last_30_days marked as depricated
+ - npg::graph object made deprecated
+ - npg::model::instrument_utilisation->last_30_days marked as deprecated
  - st::api::pool - cope with new Sequencescape release - Pool id in Sequencescape Pipelines refers to an item in Sequencescape Projects as of 13/08/2009
  - minor st:api refinements
 

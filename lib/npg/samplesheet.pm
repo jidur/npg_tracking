@@ -12,10 +12,14 @@ use English qw(-no_match_vars);
 use List::MoreUtils qw/any/;
 use URI::Escape qw(uri_escape_utf8);
 use Readonly;
+use open q(:encoding(UTF8));
 use npg_tracking::Schema;
 use st::api::lims;
 use st::api::lims::samplesheet;
 use npg_tracking::data::reference;
+use npg_tracking::util::config qw(get_config_repository
+                                  get_config_staging_areas);
+use npg_tracking::util::abs_path qw(abs_path);
 
 our $VERSION = '0';
 
@@ -38,8 +42,10 @@ Class for creating a MiSeq samplesheet using NPG tracking info and Sequencescape
 
 =cut
 
-Readonly::Scalar our $REP_ROOT => q(/nfs/sf45);
-Readonly::Scalar our $SAMPLESHEET_PATH => q(/nfs/sf49/ILorHSorMS_sf49/samplesheets/);
+my$config=get_config_staging_areas();
+Readonly::Scalar our $SAMPLESHEET_PATH => $config->{'samplesheets'}||q(samplesheets/);
+my$configr=get_config_repository();
+Readonly::Scalar our $INSTRUMENT_REFERENCE_PREFIX => $configr->{'instrument_prefix'}||q(C:\Illumina\MiSeq Reporter\Genomes);
 Readonly::Scalar our $DEFAULT_FALLBACK_REFERENCE_SPECIES=> q(PhiX);
 Readonly::Scalar my  $MIN_COLUMN_NUM => 3;
 
@@ -49,7 +55,6 @@ has '+id_run' => (
   'lazy_build' => 1,
   'required' => 0,
 );
-
 sub _build_id_run {
   my ($self) = @_;
   if($self->has_run()){
@@ -73,7 +78,26 @@ sub _build_samplesheet_path {
 
 has 'extend' => ( 'isa' => 'Bool', 'is' => 'ro',);
 
-has 'repository' => ( 'isa' => 'Str', 'is' => 'ro', default => $REP_ROOT );
+has 'mkfastq' => ( 'isa' => 'Bool', 'is' => 'ro',);
+
+has 'dual_index' => (
+  'isa' => 'Bool',
+  'is' => 'ro',
+  'lazy_build' => 1,
+);
+sub _build_dual_index {
+  my $self=shift;
+  if ($self->_index_read) {
+    for my $l ( @{$self->lims} ) {
+      if ($l->is_pool && any { scalar @{$_->tag_sequences} == 2 } $l->children) {
+        return 1;
+      }
+    }
+  }
+  return 0;
+}
+
+has 'repository' => ( 'isa' => 'Str', 'is' => 'ro' );
 
 has 'npg_tracking_schema' => (
   'isa' => 'npg_tracking::Schema',
@@ -121,7 +145,8 @@ has output => (
 sub _build_output {
   my ($self) = @_;
   my $reagent_kit = $self->run->flowcell_id();
-  $reagent_kit =~ s/(?<!\d)0*(\d+)-0*(\d+)(V\d+)?\s*\z/sprintf(q(%07d-%d%s),$1,$2,uc($3||''))/esmxg; #MiSeq looks for samplesheet name without padded zeroes in the reagent kit suffix....
+  #MiSeq looks for samplesheet name without padded zeroes in the reagent kit suffix....
+  $reagent_kit =~ s/(?<!\d)0*(\d+)-0*(\d+)(V\d+)?\s*\z/sprintf(q(%07d-%d%s),$1,$2,uc($3||''))/esmxg;
   return $self->samplesheet_path . $reagent_kit . q(.csv);
 }
 
@@ -153,35 +178,78 @@ has _limsreflist => (
 sub _build__limsreflist {
   my $self = shift;
   my @lims;
+
   for my $l (@{$self->lims}) {
     for my $tmpl ( $l->is_pool ? $l->children : ($l) ) {
 
-      my @refs = @{npg_tracking::data::reference->new(
+      my $ref = q[];
+      if (!$self->extend) {
+        my $dataref = npg_tracking::data::reference->new(
               ($self->repository ? ('repository' => $self->repository) : ()),
               aligner => q(fasta),
-              lims=>$tmpl, position=>$tmpl->position, id_run=>$self->run->id_run
-      )->refs ||[]};
-      my $ref = shift @refs;
-      $ref ||= $self->fallback_reference();
-      $ref=~s{(/fasta/).*$}{$1}smgx;
-      $ref=~s{(/references)}{}smgx;
-      $ref=~s{^/nfs/sf(\d+)}{C:\\Illumina\\MiSeq Reporter\\Genomes\\WTSI_references}smgx;
-      $ref=~s{/}{\\}smgx;
+              lims=>$tmpl, position=>$tmpl->position, id_run=>$self->id_run
+        );
+        my @refs = @{$dataref->refs ||[]};
+        $ref = shift @refs;
+        $ref ||= $self->fallback_reference();
+        $ref=~s{(/fasta/).*$}{$1}smgx;
+        $ref=~s{(/references)}{}smgx;
+        my$repository= abs_path $dataref->repository();
+        $ref=~s{^$repository}{$INSTRUMENT_REFERENCE_PREFIX}smgx;
+        $ref=~s{/}{\\}smgx;
+      }
 
       my @row = ();
       if ($self->_multiple_lanes) {
         push @row, $tmpl->position;
       }
-      push @row, $tmpl->library_id;
-      push @row, $tmpl->sample_publishable_name;
+
+      foreach my $attr (qw/library_id sample_publishable_name/) {
+        my $value = _csv_compatible_value($tmpl->$attr);
+        if (!$value) {
+          croak sprintf '%s is not available for position %i %s',
+            $attr, $tmpl->position,
+            defined $tmpl->tag_index ? 'tag index ' . $tmpl->tag_index : q[];
+        }
+        if ($self->mkfastq) {
+          # when making a samplesheet for mkfastq, replace value by run_position
+          $value = $self->id_run . q[_] . $tmpl->position;
+          if($self->_index_read) {
+            # add the tag sequences
+            ##no critic ( ControlStructures::ProhibitDeepNests)
+            if ($tmpl->tag_sequences->[0]) {
+              $value .= q[_] . $tmpl->tag_sequences->[0];
+              if ($self->dual_index) {
+                $value .= $tmpl->tag_sequences->[1] || q[];
+              }
+            }
+            ##use critic
+          }
+        }
+        push @row, $value;
+      }
+
       push @row, $ref;
+
       if($self->_index_read) {
-        push @row, $tmpl->tag_sequence || q[];
+        push @row, $tmpl->tag_sequences->[0] || q[];
+        if ($self->dual_index) {
+          push @row, $tmpl->tag_sequences->[1] || q[];
+        }
       }
       if ($self->extend) {
         push @row, map { _csv_compatible_value($tmpl->$_) } @{$self->_additional_columns};
       }
-      push @lims, \@row;
+
+      if ($self->mkfastq) {
+        # when making a samplesheet for mkfastq skip controls
+        if (!$tmpl->is_control) {
+          push @lims, \@row;
+        }
+      } else {
+        push @lims, \@row;
+      }
+
     }
   }
   return \@lims;
@@ -209,7 +277,8 @@ sub _build__index_read {
 has _multiple_lanes => (isa => 'Bool', 'is'  => 'ro', 'lazy_build' => 1,);
 sub _build__multiple_lanes {
   my $self = shift;
-  return scalar(@{$self->lims}) > 1;
+  # when making a samplesheet for mkfastq we want the Lane column, so assume there are multiple lanes
+  return ($self->mkfastq || (scalar(@{$self->lims}) > 1));
 }
 
 has _additional_columns => ('isa' => 'ArrayRef', 'is'  => 'ro', 'lazy_build' => 1,);
@@ -217,7 +286,7 @@ sub _build__additional_columns {
   my $self = shift;
   my @names = ();
   if ($self->extend) {
-    @names = grep {$_ ne 'library_id'} st::api::lims::driver_method_list();  #library_id goes to SAMPLE_ID
+    @names = grep {$_ ne 'library_id'} st::api::lims->driver_method_list();  #library_id goes to SAMPLE_ID
     push @names, 'tag_index';
     @names = sort @names;
   }
@@ -253,7 +322,7 @@ sub _csv_compatible_value {
         $value = join $as, @{$value};
       } elsif ($type eq 'HASH') {
         my @tmp = ();
-        while (my ($key,$val) = each $value) {
+        while (my ($key,$val) = each %{$value}) {
           push @tmp, join $hs, $key, $val;
         }
         $value = join $as, sort @tmp;
@@ -284,13 +353,15 @@ sub _build_template_text {
 
   my $tt = <<'END_OF_TEMPLATE';
 [% one_less_sep = num_sep; IF num_sep > 1; one_less_sep = num_sep - 1; END -%]
+[% IF with_header -%]
 [Header][% separator.repeat(num_sep) %]
 Investigator Name,[% pendingstatus.user.username %][% separator.repeat(one_less_sep) %]
 Project Name[% separator _ project_name %][% separator.repeat(one_less_sep) %]
 Experiment Name[% separator _ run.id_run %][% separator.repeat(one_less_sep) %]
 Date[% separator _ pendingstatus.date %][% separator.repeat(one_less_sep) %]
 Workflow[% separator %]LibraryQC[% separator.repeat(one_less_sep) %]
-Chemistry[% separator %]Default[% separator.repeat(one_less_sep) %]
+Chemistry[% separator %][% IF has_dual_index %]Amplicon[% ELSE %]Default[% END -%]
+[% separator.repeat(one_less_sep) %]
 [% separator.repeat(num_sep) -%]
 
 [Reads][% separator.repeat(num_sep) %]
@@ -304,12 +375,13 @@ Chemistry[% separator %]Default[% separator.repeat(one_less_sep) %]
 [Settings][% separator.repeat(num_sep) %]
 [% separator.repeat(num_sep) %]
 [Manifests][% separator.repeat(num_sep) %]
-[% separator.repeat(num_sep) -%]
-
+[% separator.repeat(num_sep); %]
+[% END -%]
 [Data][% separator.repeat(num_sep) %]
 [% 
    colnames = ['Sample_ID', 'Sample_Name', 'GenomeFolder'];
    IF has_index_read; colnames.push('Index') ;END;
+   IF has_dual_index; colnames.push('Index2'); END;
    IF has_multiple_lanes; colnames.unshift('Lane'); END;
    colnames.join(separator);
    separator;
@@ -333,23 +405,25 @@ sub process {
   my$tt=Template->new();
 
   my $template = $self->template_text;
-  my $ir = $self->_index_read;
-  my $ml = $self->_multiple_lanes;
-  my $ac = $self->_additional_columns;
-  my $nc = $self->_num_columns;
 
-  $tt->process(\$template,{
-    run                =>$self->run,
-    pendingstatus      =>
-      $self->run->run_statuses->search({q(run_status_dict.description)=>q(run pending)},{join=>q(run_status_dict)})->first,
-    limsa              => [$self->limsreflist],
-    separator          => $st::api::lims::samplesheet::SAMPLESHEET_RECORD_SEPARATOR,
-    has_multiple_lanes => $ml,
-    has_index_read     => $ir,
-    additional_columns => $ac,
-    num_sep            => $nc,
-    project_name       => join(q[ ], @{$self->study_names}) || 'unknown',
-  }, $self->output, \%processargs) || croak $tt->error();
+  my $stash = {};
+  $stash->{'separator'} = $st::api::lims::samplesheet::SAMPLESHEET_RECORD_SEPARATOR;
+  $stash->{'with_header'}         = !$self->extend;
+  $stash->{'limsa'}               = [$self->limsreflist];
+  $stash->{'has_multiple_lanes'}  = $self->_multiple_lanes;
+  $stash->{'has_index_read'}      = $self->_index_read;
+  $stash->{'has_dual_index'}      = $self->dual_index;
+  $stash->{'additional_columns'}  = $self->_additional_columns;
+  $stash->{'num_sep'}             = $self->_num_columns;
+  $stash->{'project_name'}        = join(q[ ], @{$self->study_names}) || 'unknown';
+  if (!$self->extend) {
+    $stash->{'run'}               = $self->run;
+    $stash->{'pendingstatus'}     =
+    $self->run->run_statuses->search({q(run_status_dict.description)=>q(run pending)},{join=>q(run_status_dict)})->first;
+  }
+
+  $tt->process(\$template, $stash, $self->output, \%processargs) || croak $tt->error();
+
   return;
 }
 
@@ -391,7 +465,7 @@ David K. Jackson E<lt>david.jackson@sanger.ac.ukE<gt>
 
 =head1 LICENSE AND COPYRIGHT
 
-Copyright (C) 2011 GRL, by David K. Jackson 
+Copyright (C) 2015 GRL, by David K. Jackson 
 
 This file is part of NPG.
 

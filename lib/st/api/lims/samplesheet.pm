@@ -1,18 +1,13 @@
-#########
-# Author:        Marina Gourtovaia mg8@sanger.ac.uk
-# Created:       4 September 2013
-#
-
 package st::api::lims::samplesheet;
 
 use Moose;
 use MooseX::StrictConstructor;
+use namespace::autoclean;
 use Carp;
 use File::Slurp;
 use Readonly;
-use List::MoreUtils qw/none/;
-use Clone qw(clone);
 use URI::Escape qw(uri_unescape);
+use open q(:encoding(UTF8));
 
 use npg_tracking::util::types;
 use st::api::lims;
@@ -55,7 +50,15 @@ has 'path' => (
                   isa => 'NpgTrackingReadableFile',
                   is  => 'ro',
                   required => 1,
+                  builder  => '_build_path',
+                  lazy     => 1,
 );
+
+sub _build_path {
+  my $self = shift;
+
+  return $ENV{$st::api::lims::CACHED_SAMPLESHEET_FILE_VAR_NAME};
+}
 
 =head2 id_run
 
@@ -70,7 +73,6 @@ Position, optional attribute.
 
 =cut
 has '+position' =>        (required        => 0,);
-
 
 =head2 BUILD
 
@@ -136,9 +138,15 @@ sub _build_data {
         $row->{$data_columns[$i]} = $columns[$i];
       }
       my @lanes = split /\+/smx, $row->{'Lane'};
-      if ($row->{'Index'}) {
-        $row->{'default_tag_sequence'} = $row->{'Index'};
-        delete $row->{'Index'};
+      if(not exists $row->{'default_tag_sequence'}){ #use custom NPG column if provided
+        if ($row->{'Index'}) {
+          $row->{'default_tag_sequence'} = $row->{'Index'};
+          delete $row->{'Index'};
+          if ($row->{'Index2'}) {
+            $row->{'default_tagtwo_sequence'} = $row->{'Index2'};
+            delete $row->{'Index2'};
+          }
+        }
       }
       my $index = $row->{'tag_index'};
       if ($index) {
@@ -182,9 +190,11 @@ sub _build_data {
   }
 
   if (!$self->id_run) {
-    my $en = $d->{$HEADER_SECTION}->{'Experiment Name'};
-    $self->_set_id_run($en);
-    carp qq[id_run is set to Experiment Name, $en];
+    my $en = _id_run_from_header($d);
+    if ($en) {
+      $self->_set_id_run($en);
+      carp qq[id_run is set to Experiment Name, $en];
+    }
   }
 
   return $d;
@@ -193,28 +203,23 @@ sub _build_data {
 sub _validate_data { # this is a callback for Moose trigger
                      # $old_data might not be set
   my ( $self, $data, $old_data ) = @_;
-  if (!exists $data->{'Reads'} || !@{ $data->{'Reads'}}) {
-    croak 'Information about read lengths is not available';
-  }
-  #Are read lengths numbers?
 
-  foreach my $section (($DATA_SECTION, $HEADER_SECTION)) {
-    if (!exists $data->{$section}) {
-      croak "$section section is missing";
-    }
+  if (!exists $data->{$DATA_SECTION}) {
+    croak "$DATA_SECTION section is missing";
   }
 
-  my $id_run = $data->{$HEADER_SECTION}->{'Experiment Name'};
+  my $id_run = _id_run_from_header($data);
   if ($id_run && $self->id_run && $id_run != $self->id_run) {
     carp sprintf 'Supplied id_run %i does not match Experiment Name, %s',
                   $self->id_run, $id_run;
   }
 
-  #What are compulsory Data section? - check for them
-  #Do we have at least one lane? - should be numbers as well
-  #Do we have a mixture of indices and non-indexed in one lane?
-  #Are all indices numbers?
   return;
+}
+
+sub _id_run_from_header {
+  my $data = shift;
+  return $data->{$HEADER_SECTION}->{'Experiment Name'};
 }
 
 =head2 is_pool
@@ -330,7 +335,7 @@ sub _build__sschildren {
 
     foreach my $attr_value (sort {$a <=> $b} keys %{$h}) {
       $init->{$child_attr_name} = $attr_value;
-      $init->{'data'}           = clone($self->data);
+      $init->{'data'}           = $self->data;
       push @children, __PACKAGE__->new($init);
     }
   }
@@ -351,8 +356,7 @@ sub children {
   return @{$self->_sschildren()};
 }
 
-my @attrs = __PACKAGE__->meta->get_attribute_list;
-for my $m (grep { my $delegated = $_; none {$_ eq $delegated} @attrs } @st::api::lims::DELEGATED_METHODS ) {
+for my $m ( st::api::lims->driver_method_list_short(__PACKAGE__->meta->get_attribute_list) ) {
 
   __PACKAGE__->meta->add_method( $m, sub {
         my $self=shift;
@@ -383,6 +387,9 @@ for my $m (grep { my $delegated = $_; none {$_ eq $delegated} @attrs } @st::api:
           } else {
             if ($value) {
               $value = uri_unescape($value);
+              if ( not utf8::is_utf8($value)) {
+                utf8::decode($value) or croak "Cannot decode $value to UTF8";
+              }
             }
           }
           return $value;
@@ -411,7 +418,7 @@ sub to_string {
   return $s;
 }
 
-no Moose;
+__PACKAGE__->meta->make_immutable;
 
 1;
 __END__
@@ -428,17 +435,17 @@ __END__
 
 =item MooseX::StrictConstructor
 
+=item namespace::autoclean
+
 =item Carp
 
 =item Readonly
 
 =item File::Slurp
 
-=item List::MoreUtils
+=item URI::Escape
 
-=item Readonly
-
-=item Clone
+=item open
 
 =back
 
@@ -452,7 +459,7 @@ Marina Gourtovaia E<lt>mg8@sanger.ac.ukE<gt>
 
 =head1 LICENSE AND COPYRIGHT
 
-Copyright (C) 2013 GRL, by Marina Gourtovaia
+Copyright (C) 2016 Genome Research Ltd.
 
 This file is part of NPG.
 

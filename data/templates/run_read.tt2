@@ -14,8 +14,10 @@
 
     is_miseq_instrument = model.instrument.is_miseq_instrument
     flabel = is_miseq_instrument ? 'Reagent kit id' : 'Flowcell id';
+    staging_urls = view.staging_urls(model.staging_server_name);
+    staging_url  = staging_urls.npg_tracking ? staging_urls.npg_tracking : '';
+    seqqc_url    = staging_urls.seqqc ? staging_urls.seqqc : '';
  -%]
-[% PROCESS urls.tt2 -%]
 <div>
 <div class="lfloat roundborder">
 <div class="page_title"[% IF model.current_run_status.description == 'run pending'; st = ' style="color: #FF0000"'; st; END; %]>[% model.run_folder %]</div>
@@ -34,7 +36,7 @@
 [%- IF batch_id >= 1000000000000 -%]
 <th>QC tube EAN13</th><td>[% batch_id %]</td>
 [%- ELSE -%]
-<th>Batch id</th><td>[% IF batch_id %]<a href="[% lims_batches_url _ batch_id %]">[% batch_id %]</a>[% ELSE %]unknown[% END %]</td>
+<th>Batch id</th><td>[% IF batch_id %]<a href="[% view.lims_batches_url _ batch_id %]">[% batch_id %]</a>[% ELSE %]unknown[% END %]</td>
 [%- END -%]
 </tr>
 [% IF model.flowcell_id %]<tr><th>[% flabel %]</th><td>[% model.flowcell_id %]</td></tr>[% END -%]
@@ -53,8 +55,8 @@
   <tr><th>Instrument / platform</th><td><a href="[% SCRIPT_NAME %]/instrument/[% model.id_instrument %]">[% model.instrument.name %]</a>[% IF model.hiseq_slot %] Slot [% model.hiseq_slot %][% END %] / [% model.instrument_format.model %]</td></tr>
   <tr><th>Cycle count actual / expected</th><td>[% model.actual_cycle_count %] / [% model.expected_cycle_count %]</td></tr>
   <tr><th>Current status</th><td>
-[%- 
-current_status = model.current_run_status.description; 
+[%-
+current_status = model.current_run_status.description;
 IF ( ( current_status == 'qc review pending' ) || (current_status == 'qc in progress') ) && requestor.is_member_of( 'manual_qc' ) -%]
 <form id="manual_qc" method="post" action="[% SCRIPT_NAME %]/run_status/;create"><div>
   <input type="hidden" name="id_run" value="[% model.id_run %]" />
@@ -88,24 +90,18 @@ IF ( ( current_status == 'qc review pending' ) || (current_status == 'qc in prog
 
 <div id="team_container" class="rfloat team-[% USE String(model.team); String.lower %]">
 <p class="team_name">team '[% model.team %]'</p>
-<div class="roundborder">[% PROCESS run_verified.tt2 %]</div>
+<div class="roundborder">Loaded by [% model.loader_info.loader %]</div>
 </div>
 <br style="clear:right" />
 
 <div id="run_menu_container">
 
 [%- IF model.is_in_staging -%]
-[% SET staging_url = view.util.config.val('application', 'staging_url') %]
 <div class="run_menu rfloat">
 <ul class="inline">
-   [%- IF model.has_tag_with_value('rta') -%]
-   <li><a class="npg_menu" href="[% staging_url %]/cgi-bin/locate_runfolder/[% run_folder %]/Data/Status.htm?redir">RTA Status</a></li>
-   [%- END -%]
    <li><a class="npg_menu" href="[% staging_url %]/cgi-bin/locate_runfolder/[% run_folder %]?redir">Run Folder</a></li>
    [%- IF model.has_analysis_in_progress -%]
-   <li><a class="npg_menu" href="[% staging_url %]/cgi-bin/locate_runfolder/[% run_folder %]/latest?redir">Latest Analysis</a></li>
-   <li><a class="npg_menu" href="[% staging_url %]/cgi-bin/locate_runfolder/[% run_folder %]/ivc?redir">Latest IVC</a></li>
-   <li><a class="npg_menu" href="[% staging_url %]/cgi-bin/locate_runfolder/[% run_folder %]/Latest_Summary/archive/qc/tileviz?redir">Tileviz</a></li>
+   <li><a class="npg_menu" href="[% staging_url %]/cgi-bin/locate_runfolder/[% run_folder %]/Latest_Summary/archive/tileviz?redir">Tileviz</a></li>
    [%- END -%]
 </ul>
 </div>
@@ -114,13 +110,12 @@ IF ( ( current_status == 'qc review pending' ) || (current_status == 'qc in prog
 
 <div class="run_menu rfloat">
 <ul class="inline">
-  <li><a class="npg_menu" href="[% staging_url %]/cgi-bin/mpsa_image/[% id_run %]/1/1/[% IF !is_miseq_instrument; '110'; END %]1.html">Image Browser</a></li>
-[%- IF !is_miseq_instrument && batch_id %]
-  <li><a class="npg_menu" href="http://psd-production.internal.sanger.ac.uk:6900/batches/search?id=[% batch_id %]">SybrGreen Images</a></li>
+[%- IF model.has_run_archived %]
+  <li><a class="npg_menu" href="http://si-trace-web.internal.sanger.ac.uk:8080/cgi-bin/ebi_submissions.pl?show=both&filter=run&filter_op=equals&sort_by=run&psz=25&filter_val=[% id_run %]">EBI submissions</a></li>
 [% END -%]
- <li><a class="npg_menu" href="[% SCRIPT_NAME _ '_qc/summary/' _ earliest_id %]">NPG QC</a></li>
+ <li><a class="npg_menu" href="[% seqqc_url %]/illumina/runs/[% earliest_id %]">NPG QC</a></li>
 [%- IF model.has_analysis_in_progress %]
- <li><a class="npg_menu" href="http://sfweb.internal.sanger.ac.uk:1959/checks/runs/[% earliest_id %]">NPG SeqQC</a></li>
+ <li><a class="npg_menu" href="[% seqqc_url %]/checks/runs/[% earliest_id %]">NPG SeqQC</a></li>
 [% END -%]
 </ul>
 </div>
@@ -151,7 +146,7 @@ IF ( ( current_status == 'qc review pending' ) || (current_status == 'qc in prog
 <tr>
  <td>[% run_lane.position %]</td>
  <td>[% IF requestor.is_member_of('manual_qc') -%]
-<a href="#" onclick="runLaneTagForm('[% run_lane.id_run_lane %]','[% run_lane.position %]','[% FOREACH tag = run_lane.tags %][% tag.tag %] [% END %]');return false;">Add</a> 
+<a href="#" onclick="runLaneTagForm('[% run_lane.id_run_lane %]','[% run_lane.position %]','[% FOREACH tag = run_lane.tags %][% tag.tag %] [% END %]');return false;">Add</a>
 [%- END %][% FOREACH tag = run_lane.tags %][% tag.tag | html %] [% END -%]
 </td>
  <td><a href="[% SCRIPT_NAME %]/run_lane/[% run_lane.id_run_lane %]">View Lane</a></td>
@@ -195,10 +190,9 @@ IF ( ( current_status == 'qc review pending' ) || (current_status == 'qc in prog
 
 <script type="text/javascript">
   document.title='[% model.name %] Run Details';
-  var rAndDCodes = [% model.ajax_array_cost_group_values('R&D') %];
   var id_run = [% model.id_run %];
   var batch_id = [% model.batch_id %];
-  Event.observe(window,'load',things_to_do_on_load(id_run, batch_id, rAndDCodes));
+  Event.observe(window,'load',things_to_do_on_load(id_run, batch_id));
 
   function runLaneTagForm(id_run_lane, position, existing_tags) {
     var form_div = $('run_lane_tag_form');

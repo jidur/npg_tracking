@@ -197,7 +197,7 @@ sub run_lanes {
     my $run_lanes = $self->read->getElementsByTagName('run_lanes')->[0];
 
     if(!$run_lanes) {
-      croak q[Error: Failed to fetch run_lanes.];#.$run_lanes->asString(1); # pretty print serialised DOM
+      croak q[Error: Failed to fetch run_lanes.];
     }
 
     ## no critic (ProhibitComplexMappings)
@@ -216,45 +216,6 @@ sub run_annotations {
   return $self->annotations(@args);
 }
 
-sub list_recent {
-  my $self       = shift;
-  # used somewhere
-  my $util       = $self->util();
-  my ($obj_type) = (ref $self) =~ /([^:]+)$/smx;
-  my $obj_pk     = $self->primary_key();
-  my $obj_pk_val = $self->$obj_pk();
-  my $obj_uri    = sprintf '%s/%s;list_summary_xml', $util->base_uri(), $obj_type;
-
-  $self->{'list_recent'} = $util->parser->parse_string($util->get($obj_uri,[]));
-
-  my $runs    = $self->{'list_recent'}->getElementsByTagName('runs')->[0];
-  my $pkg     = ref $self;
-
-  return [map { $self->new_from_xml($pkg, $_) } $runs->getElementsByTagName('run')];
-}
-
-sub recent_running_runs {
-  my ($self) = @_;
-  # used in instrument_utilisation module
-  my $util       = $self->util();
-  my ($obj_type) = (ref $self) =~ /([^:]+)$/smx;
-  my $obj_uri    = sprintf '%s/%s/recent/running/runs.xml', $util->base_uri(), $obj_type;
-
-  my $xml_obj = $util->parser->parse_string( $util->get($obj_uri, []));
-  my @runs    = $xml_obj->getElementsByTagName('run');
-
-  foreach my $run (@runs) {
-    my $temp = {};
-    $temp->{id_run} = $run->getAttribute('id_run');
-    $temp->{start} = $run->getAttribute('start');
-    $temp->{end} = $run->getAttribute('end');
-    $temp->{id_instrument} = $run->getAttribute('id_instrument');
-    $run = $temp;
-  }
-
-  return \@runs;
-}
-
 sub lims {
   my $self = shift;
 
@@ -264,68 +225,6 @@ sub lims {
                                         );
   }
   return $self->{'lims'};
-}
-
-sub add_tags {
-  my ($self, @new_tags) = @_;
-  my $util       = $self->util();
-  my $id_run     = $self->id_run();
-  my @old_tags   = @{$self->tags()};
-
-  if(!$id_run) {
-    croak q(Cannot add a tag without an existing run id);
-  }
-
-  my $obj_uri = $util->base_uri().qq{/run/$id_run;update_tags};
-  my $payload = ['Content_Type' => 'form-data',
-                 'Content'      => [
-                                      'pipeline'        => 1,
-                                      'tags'            => "@new_tags @old_tags",
-                                      'tagged_already'  => "@old_tags",
-                                   ],
-                ];
-  my $content = $util->post_non_xml($obj_uri, $payload);
-  if($content =~ /Run[ ]$id_run[ ]tagged/smx) {
-    carp qq{Run $id_run tagged with @new_tags.};
-  }
-  return 1;
-}
-
-sub remove_tags {
-  my ($self, @tags_to_remove) = @_;
-  my $util       = $self->util();
-  my $id_run     = $self->id_run();
-  my @old_tags   = @{$self->tags()};
-
-  my (@new_tags, %tags_to_remove_hash);
-
-  foreach my $tag (@tags_to_remove){
-    $tags_to_remove_hash{$tag}++;
-  }
-
-  foreach my $tag (@old_tags){
-    if(!$tags_to_remove_hash{$tag}){
-      push @new_tags, $tag;
-    }
-  }
-
-  if(!$id_run) {
-    croak q(Cannot add a tag without an existing run id);
-  }
-
-  my $obj_uri = $util->base_uri().qq{/run/$id_run;update_tags};
-  my $payload = ['Content_Type' => 'form-data',
-                 'Content'      => [
-                                      'pipeline'        => 1,
-                                      'tags'            => "@new_tags",
-                                      'tagged_already'  => "@old_tags",
-                                   ],
-                ];
-  my $content = $util->post_non_xml($obj_uri, $payload);
-  if($content =~ /Run[ ]$id_run[ ]tagged/smx) {
-    carp qq{Run $id_run tags removed: @tags_to_remove.};
-  }
-  return 1;
 }
 
 1;
@@ -354,16 +253,6 @@ npg::api::run
     'util'   => $oUtil,
   });
 
-  my $oRun = npg::api::run->new({
-    'id_batch'             => $iIdSampleBatch,
-    'id_instrument'        => $iIdInstrument,
-    'priority'             => $iPriority,
-    'actual_cycle_count'   => $iActualCycleCount,
-    'expected_cycle_count' => $iExpectedCycleCount,
-    'id_run_pair'          => $iIdRunPair,
-  });
-  $oRun->create();
-
 =head2 init - handling for initialization by run name in id_run
 
 =head2 is_paired - deprecated accessor method, please use is_paired_run instead
@@ -385,10 +274,6 @@ npg::api::run
   my $bHasTag = $oRun->has_tag($tag);
 
 =head2 tags - return all the associated tags with this run as an arrayref
-
-=head2 add_tags - given a list of tags, add them to the run by http post if the id_run is available
-
-=head2 remove_tags - given a list of tags, remove them from this run by http post
 
 =head2 fields - accessors for this table/class
 
@@ -458,16 +343,6 @@ npg::api::run
 =head2 run_annotations - arrayref of npg::api::run_annotations on this run
 
   my $arAnnotations = $oRun->run_annotations();
-
-=head2 list_recent - arrayref of npg::api::runs with recent status changes
-
-  (within 14 days at time of writing)
-
-  my $arRecentRuns = $oRun->list_recent();
-
-=head2 recent_running_runs - fetch an arrayref of hashrefs that are designated recent runs in NPG - the hashrefs only contain id_run, id_instrument, start and end (end may not be true end of the run on an instrument, as it may be ongoing whilst the method is called)
-
-  my $arRecentRunningRuns - $oRun->recent_running_runs();
 
 =head2 lims  - returns st::api::lims batch-level object for the batch id this run relates to
  

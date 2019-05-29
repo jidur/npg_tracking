@@ -27,14 +27,8 @@ sub _parse_taxon_id {
     return $taxon_id;
 }
 
-sub live {
-    my $self = shift;
-    return $self->live_url()  . q{/samples};
-}
-
-sub dev {
-    my $self = shift;
-    return $self->dev_url()   . q{/samples};
+sub path {
+    return q{samples};
 }
 
 sub fields { return qw( id name gc-content organism scientific-rationale concentration consent_withdrawn ); }
@@ -93,7 +87,7 @@ sub strain {
 sub reference_genome {
     my $self = shift;
     $self->parse();
-    return ($self->get(q[Sample reference genome])||[])->[0] || $self->get(q[Reference Genome])->[0];
+    return ($self->get(q[Sample reference genome])||[])->[0] || ($self->get(q[Reference Genome])||[])->[0];
 }
 
 sub contains_nonconsented_human {
@@ -124,13 +118,7 @@ st::api::sample - an interface to sample lims
     my @aFields = $oSample->fields();
     my @aFields = <pkg>->fields();
 
-=head2 dev - development service URL
-
-    my $sDevURL = $oSample->dev();
-
-=head2 live - live service URL
-
-    my $sLiveURL = $oSample->live();
+=head2 path - object type specific path of object uri
 
 =head2 organism - convenience method for ->get('Organism');
 

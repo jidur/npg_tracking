@@ -57,6 +57,12 @@ __PACKAGE__->table("user");
   is_nullable: 1
   size: 64
 
+=head2 iscurrent
+
+  data_type: 'tinyint'
+  default_value: 1
+  is_nullable: 0
+
 =cut
 
 __PACKAGE__->add_columns(
@@ -71,6 +77,8 @@ __PACKAGE__->add_columns(
   { data_type => "char", is_nullable => 1, size => 128 },
   "rfid",
   { data_type => "varchar", is_nullable => 1, size => 64 },
+  "iscurrent",
+  { data_type => "tinyint", default_value => 1, is_nullable => 0 },
 );
 
 =head1 PRIMARY KEY
@@ -173,21 +181,6 @@ __PACKAGE__->has_many(
   { cascade_copy => 0, cascade_delete => 0 },
 );
 
-=head2 manual_qc_statuses
-
-Type: has_many
-
-Related object: L<npg_tracking::Schema::Result::ManualQcStatus>
-
-=cut
-
-__PACKAGE__->has_many(
-  "manual_qc_statuses",
-  "npg_tracking::Schema::Result::ManualQcStatus",
-  { "foreign.id_user" => "self.id_user" },
-  { cascade_copy => 0, cascade_delete => 0 },
-);
-
 =head2 run_lane_statuses
 
 Type: has_many
@@ -264,8 +257,8 @@ __PACKAGE__->has_many(
 );
 
 
-# Created by DBIx::Class::Schema::Loader v0.07035 @ 2013-07-23 16:11:44
-# DO NOT MODIFY THIS OR ANYTHING ABOVE! md5sum:dNtuo6HajBsOL+Z00k9RlA
+# Created by DBIx::Class::Schema::Loader v0.07045 @ 2016-10-19 11:44:50
+# DO NOT MODIFY THIS OR ANYTHING ABOVE! md5sum:Izb038DNoPlC92eN4HrnPw
 
 # Author:        david.jackson@sanger.ac.uk
 # Created:       2010-04-08
@@ -283,8 +276,8 @@ Related object: L<npg_tracking::Schema::Result::Usergroup>
 __PACKAGE__->many_to_many('usergroups' => 'user2usergroups', 'usergroup');
 __PACKAGE__->add_unique_constraint('username', ['username']);
 
-
 use Carp;
+with 'npg_tracking::Schema::Retriever';
 
 =head2 check_row_validity
 
@@ -344,19 +337,6 @@ sub _insist_on_valid_row {
     croak "Invalid identifier: $arg" if !defined $row_object;
 
     return $row_object;
-}
-
-
-=head2 pipeline_id
-
-Convenience method to return the database id field of the username 'pipeline'.
-
-=cut
-
-sub pipeline_id {
-    my ($self) = @_;
-    return $self->result_source->schema->resultset('User')->
-                find( { username => 'pipeline' } )->id_user();
 }
 
 __PACKAGE__->meta->make_immutable;

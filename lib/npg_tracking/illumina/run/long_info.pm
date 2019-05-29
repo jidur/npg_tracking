@@ -1,18 +1,11 @@
-#############
-# Created By: ajb
-# Created On: 2009-09-30
-
 package npg_tracking::illumina::run::long_info;
+
 use Moose::Role;
-
-use Moose::Util::TypeConstraints;
-use MooseX::AttributeHelpers;
-
 use Carp;
-use English qw{-no_match_vars};
 use List::Util qw(first sum);
 use List::MoreUtils qw(pairwise);
 use IO::All;
+use File::Spec;
 use XML::LibXML;
 use Try::Tiny;
 
@@ -30,8 +23,8 @@ npg_tracking::illumina::run::long_info
 
   package Mypackage;
   use Moose;
-  
-  ... before consuming this role, you need to provide runfolder_path methods ...
+
+  ... before consuming this role, you need to provide runfolder_path methods
 
   with q{npg_tracking::illumina::run::long_info};
 
@@ -41,6 +34,12 @@ This role provides methods providing information about the run, ideally from the
 
 =head1 SUBROUTINES/METHODS
 
+=cut
+
+#########################################################
+#       Public attributes and methods                   #
+#########################################################
+
 =head2 is_paired_read
 
 Boolean determines if the run is a paired read or not, this can be set on object construction
@@ -49,12 +48,14 @@ Boolean determines if the run is a paired read or not, this can be set on object
 
 =cut
 
-has q{is_paired_read} => (isa => q{Bool}, is => q{ro}, lazy_build => 1,
-  documentation => q{This run is a paired end read},);
-
+has q{is_paired_read} => (
+  isa           => q{Bool},
+  is            => q{ro},
+  lazy_build    => 1,
+  documentation => q{This run is a paired end read},
+);
 sub _build_is_paired_read {
-  my ($self) = @_;
-
+  my $self = shift;
   return $self->read2_cycle_range ? 1 : 0;
 }
 
@@ -66,12 +67,14 @@ Boolean determines if the run is indexed or not, this can be set on object const
 
 =cut
 
-has q{is_indexed} => (isa => q{Bool}, is => q{ro}, lazy_build => 1,
-  documentation => q{This run is an indexed run},);
-
+has q{is_indexed} => (
+  isa           => q{Bool},
+  is            => q{ro},
+  lazy_build    => 1,
+  documentation => q{This run has at least one read},
+);
 sub _build_is_indexed {
-  my ($self) = @_;
-
+  my $self = shift;
   return $self->indexing_cycle_range ? 1 : 0;
 }
 
@@ -83,11 +86,14 @@ The length of the index 'barcode'
 
 =cut
 
-has q{index_length} => (isa => q{Int}, is => q{ro}, lazy_build => 1,
-  documentation => q{The length of the index 'barcode', normally the number of cycles performed},);
-
+has q{index_length} => (
+  isa           => q{Int},
+  is            => q{ro},
+  lazy_build    => 1,
+  documentation => q{The length of the index 'barcode', normally the number of cycles performed},
+);
 sub _build_index_length {
-  my ($self) = @_;
+  my $self = shift;
 
   # if not indexed, then the length would by default be 0
   if (!$self->is_indexed()) {
@@ -98,164 +104,596 @@ sub _build_index_length {
   return $end - $start + 1;
 }
 
-=head2 use_bases
+=head2 lane_count
 
-The config string used by Illumina and other scripts to describe the run i.e. Y54,I6n,y54
-can be set on object construction
+Number of lanes configured for this run. May be set on Construction.
 
-  my $sUseBases = $class->use_bases();
-
-=head2 read_config_string
-
-synonym for use_bases - cannot be used to set on construction
+  my $iLaneCount = $self->lane_count();
 
 =cut
 
-#################
-# note, much of the code below is stolen from srpipe::runfolder (perhaps to be swapped for this role)
-#################
-
-has q{use_bases} => (isa => q{Str}, is => q{ro}, lazy_build => 1,
-  documentation => q{The config string used by Illumina and other scripts to describe the run i.e. Y54,I6n,y54},);
-
-sub _build_use_bases {
-  my ($self) = @_;
-  my@rc=$self->read_cycle_counts();
-  my@ri=$self->reads_indexed();
-  my$l=0;
-  return join q(,), pairwise { ( $b ? q(I) : ( $l++ ? q(y) : q(Y) ) ).$a } @rc, @ri;
-}
-
-sub read_config_string {
-  my ($self) = @_;
-  return $self->use_bases;
-}
-
-=head2 recipe
-
-XML string from recipe file containing Illumina GA run instructions.
-
-=cut
-
-# if used as the attribute, causes a run_time error when called
-
-sub recipe {
-  my ($self) = @_;
-  return $self->_recipe_store();
-}
-
-has _recipe_store => (
-  is => 'ro',
-  isa => 'Str',
-  lazy_build => 1,
-  init_arg => undef,
+has q{lane_count} => (
+  is            => 'ro',
+  isa           => 'Int',
+  writer        => '_set_lane_count',
+  predicate     => 'has_lane_count',
+  documentation => q{The number of lanes on this run},
 );
 
-sub _fetch_recipe {
+=head2 read_cycle_counts
+
+List of cycle lengths configured for each read/index in order.
+
+=cut
+
+has q{_read_cycle_counts} => (
+  traits  => ['Array'],
+  is      => 'ro',
+  isa     => 'ArrayRef[Int]',
+  default => sub { [] },
+  handles => {
+    _push_read_cycle_counts => 'push',
+    read_cycle_counts       => 'elements',
+    has_read_cycle_counts   => 'count',
+  },
+);
+
+=head2 reads_indexed
+
+List of booleans for each read indicating a multiplex index.
+
+=cut
+
+has q{_reads_indexed} => (
+  traits  => ['Array'],
+  is      => 'ro',
+  isa     => 'ArrayRef[Bool]',
+  default => sub { [] },
+  handles => {
+    _push_reads_indexed => 'push',
+    reads_indexed       => 'elements',
+    has_reads_indexed   => 'count',
+  },
+);
+
+=head2 indexing_cycle_range
+
+First and last indexing cycles, or nothing returned if not indexed
+
+=cut
+
+has q{_indexing_cycle_range} => (
+  traits  => ['Array'],
+  is      => 'ro',
+  isa     => 'ArrayRef[Int]',
+  default => sub { [] },
+  handles => {
+    _pop_indexing_cycle_range  => 'pop',
+    _push_indexing_cycle_range => 'push',
+    indexing_cycle_range       => 'elements',
+    has_indexing_cycle_range   => 'count',
+  },
+);
+
+=head2 read1_cycle_range
+
+First and last cycles of read 1
+
+=cut
+
+has q{_read1_cycle_range} => (
+  traits  => ['Array'],
+  is      => 'ro',
+  isa     => 'ArrayRef[Int]',
+  default => sub { [] },
+  handles => {
+    _push_read1_cycle_range  => 'push',
+    read1_cycle_range        => 'elements',
+    has_read1_cycle_range    => 'count',
+  },
+);
+
+=head2 read2_cycle_range
+
+First and last cycles of read 2, or nothing returned if no read 2
+
+=cut
+
+has _read2_cycle_range => (
+  traits  => ['Array'],
+  is      => 'ro',
+  isa     => 'ArrayRef[Int]',
+  default => sub { [] },
+  handles => {
+    _push_read2_cycle_range => 'push',
+    read2_cycle_range       => 'elements',
+    has_read2_cycle_range   => 'count',
+  },
+);
+
+=head2 expected_cycle_count
+
+Number of cycles configured for this run and for which the output data (images or intensities or both) can be expected to be found below this folder. This number is extracted from the recipe file. It does not include the cycles for the paired read if that is performed as a separate run - the output data for that will be in a different runfolder.
+May be set on construction.
+
+  $iExpectedCycleCount = $self->expected_cycle_count();
+
+=cut
+
+has q{expected_cycle_count} => (
+  is         => 'ro',
+  isa        => 'Int',
+  lazy_build => 1,
+  writer     => '_set_expected_cycle_count',
+);
+sub _build_expected_cycle_count {
   my $self = shift;
-  my @files = map { $self->runfolder_path.qq(/$_) } map { /Recipe\S*?[.]xml/smxg } io($self->runfolder_path)->all;
-  if (@files < 1) {
-    croak 'No recipe file found';
-  }
-  if (@files > 1) {
-    croak 'Multiple recipe files found: ' . join q(,) , @files;
-  }
-  return io(shift @files)->slurp;
+  return sum $self->read_cycle_counts;
 }
 
-sub _build__recipe_store {
+=head2 cycle_count
+
+synonym for expected_cycle_count. May not be set on construction. Best to use expected_cycle_count.
+
+=cut
+
+sub cycle_count {
   my $self = shift;
+  return $self->expected_cycle_count();
+}
 
-  my $recipe = $self->_fetch_recipe();
+=head2 tilelayout_columns
 
-  #Now parse recipe and record useful info...:
-  my $doc = XML::LibXML->new()->parse_string($recipe);
-  my @nodelist = $doc->getElementsByTagName('Protocol');
+The number of tile columns in a lane. May be set on construction.
 
-  $self->_set_lane_count($doc->getElementsByTagName('Lane')->size);
-  $self->_set_expected_cycle_count(sum map { $_->getElementsByTagName('Incorporation')->size() } @nodelist);
+  my $iTilelayoutColumns = $class->tilelayout_columns();
 
-  my $rc = {
-    count => 0, #restarts with each read
-    start => 1, #start of current read
-    index => 0, #from first read
-    read_index => 1, #non-indexing/mutiplex read number
-    indexingcurrent =>0,
+=cut
+
+has q{tilelayout_columns} => (
+  is            => 'ro',
+  isa           => 'Int',
+  writer        => '_set_tilelayout_columns',
+  predicate     => 'has_tilelayout_columns',
+  documentation => q{The number of tile columns in a lane},
+);
+
+=head2 tilelayout_rows
+
+The number of tile rows in a lane. May be set on construction.
+
+  my $iTilelayoutRows = $class->tilelayout_rows();
+
+=cut
+
+has q{tilelayout_rows} => (
+  is            => 'ro',
+  isa           => 'Int',
+  writer        => '_set_tilelayout_rows',
+  predicate     => 'has_tilelayout_rows',
+  documentation => q{The number of tile rows in a lane},
+);
+
+=head2 tile_count
+
+=cut
+
+has q{tile_count} => (
+  isa           => q{Int},
+  is            => q{ro},
+  lazy_build    => 1,
+  writer        => '_set_tile_count',
+  documentation => q{Number of tiles in a lane},
+);
+sub _build_tile_count {
+  my ($self) = @_;
+  my $tcount;
+  try {
+    my $lane_el = $self->_data_intensities_config_xml_object()->getElementsByTagName('Lane')->[0];
+    $tcount = $lane_el->getElementsByTagName('Tile')->size();
+  } catch {
+    $tcount = $self->tilelayout_rows() * $self->tilelayout_columns();
   };
-  my $indexprepelementfound;
-
-  foreach ( map { $_->getElementsByTagName(q(*)) } @nodelist){
-
-    if ( $_->localname eq 'Incorporation' ) {
-
-      $rc->{count}++; $rc->{index}++;
-
-    } elsif ($_->localname eq 'ChemistryRef') {
-
-      if ( $_->getAttribute('Name') =~ /(\AEnd)|(FirstBase\Z)/smx ) {
-
-        $self->_set_values_at_end_of_read( $rc );
-        if ( $indexprepelementfound or ( $_->getAttribute('Name') =~ /\AIndexing/smx ) ) {
-
-          $rc->{indexingcurrent} = 1;
-          $indexprepelementfound = 0;
-
-        } else {
-
-          $rc->{indexingcurrent} = 0;
-
-        }
-
-      } elsif ($_->getAttribute('Name') eq q(IndexingPreparation)) {
-
-        $indexprepelementfound = 1;
-
-      }
-
-    }
-
-  }
-
-  $self->_set_values_at_end_of_read($rc);
-  return $recipe;
+  return $tcount;
 }
 
+=head2 lane_tilecount
 
-=head2 runinfo
+utilises the Data/Intensities/config.xml to generate a hashref of
 
-XML string from runinfo file containing Illumina run config.
+  {lanes} = tilecount_value
 
 =cut
 
-# if used as the attribute, causes a run_time error when called - presumably (as code copied from above)
-
-sub runinfo {
-  my ($self) = @_;
-  return $self->_runinfo_store();
-}
-
-has _runinfo_store => (
-  is => 'ro',
-  isa => 'Str',
+has q{lane_tilecount} => (
+  isa        => q{HashRef},
+  is         => q{ro},
   lazy_build => 1,
-  init_arg => undef,
 );
+sub _build_lane_tilecount {
+  my ( $self ) = @_;
+  my $lane_tilecount = {};
+  try {
+    my $run_el = ( $self->_data_intensities_config_xml_object()->getElementsByTagName( 'Run' ) )[0];
 
-sub _fetch_runinfo {
-  my $self = shift;
-  return io(join q(/),$self->runfolder_path,'RunInfo.xml' )->slurp;
+    for my $lane_el ( ( $run_el->getChildrenByTagName( 'TileSelection' ) )[0]->getChildrenByTagName( 'Lane' ) ) {
+      my $lane = $lane_el->getAttribute( 'Index' );
+      $lane_tilecount->{ $lane } = $lane_el->getElementsByTagName('Tile')->size();
+    }
+  } catch {
+    my $lane_count = $self->lane_count();
+    my $tile_count = $self->tile_count();
+    for my $lane (1..$lane_count) {
+      $lane_tilecount->{ $lane } = $tile_count;
+    }
+  };
+
+  return $lane_tilecount;
 }
 
+=head2 experiment_name
+
+For platforms HiSeq, HiSeqX, Hiseq4000 and NovaSeq experiment name loaded from
+runParameters.xml.
+
+=cut
+
+has q{experiment_name} => (
+  isa        => 'Maybe[Str]',
+  is         => 'ro',
+  lazy_build => 1,
+);
+sub _build_experiment_name {
+  my $self = shift;
+
+  my $doc = $self->_run_params;
+  my $experiment_name;
+
+  $experiment_name = _get_single_element_text($doc, 'ExperimentName') || q[];
+
+  return $experiment_name;
+}
+
+=head2 run_flowcell
+
+flowcell loaded from RunInfo.xml for platforms HiSeq and NovaSeq and
+ReagentKitBarcode from runParameters.xml for platform MiSeq
+
+=cut
+
+has q{run_flowcell} => (
+  isa        => 'Str',
+  is         => 'ro',
+  lazy_build => 1,
+);
+sub _build_run_flowcell {
+  my $self = shift;
+
+  my $flowcell;
+
+  if ($self->platform_MiSeq()) {
+    my $doc = $self->_run_params;
+    $flowcell = _get_single_element_text($doc, 'ReagentKitBarcode');
+  } else {
+    my $doc = $self->_runinfo_document;
+    $flowcell = _get_single_element_text($doc, 'Flowcell');
+  }
+
+  return $flowcell;
+}
+
+#########################################################
+# 'before' attribute modifiers definitions              #
+#########################################################
+
+foreach my $f ( qw(expected_cycle_count
+                   lane_count
+                   read_cycle_counts
+                   indexing_cycle_range
+                   read1_cycle_range
+                   read2_cycle_range) ) {
+   before $f => sub {
+     my $self = shift;
+     my $has_method_name = join q[_], 'has', $f;
+     if( !$self->$has_method_name ) { # If array is empty
+       $self->_runinfo_store();
+     }
+   };
+}
+
+foreach my $f ( qw(tilelayout_rows
+                   tilelayout_columns) ) {
+  before $f => sub {
+    my $self=shift;
+    my $has_method_name = join q[_], 'has', $f;
+    if( !$self->$has_method_name ) {
+      try {
+        $self->_runinfo_store();
+      };
+      if( !$self->$has_method_name ) {
+        $self->_tilelayout_store();
+      }
+    }
+  };
+}
+
+#########################################################
+# End of 'before' attribute modifiers definitions       #
+#########################################################
+
+##no critic (NamingConventions::Capitalization)
+
+=head2 platform_HiSeq
+
+Method returns true if sequencing was performed on an Illumina
+instrument belonging to an 'older' HiSeq platform (1000, 1500, 2000 and 2500).
+
+=cut
+
+sub platform_HiSeq {
+  my $self = shift;
+  return ( ($self->_software_application_name() =~ /HiSeq/xms) and
+       not ($self->platform_HiSeqX() or $self->platform_HiSeq4000()) );
+}
+
+=head2 platform_HiSeq4000
+
+Method returns true if sequencing was performed on an Illumina
+instrument belonging to HiSeq 3000 or HiSeq 4000 platform.
+
+=cut
+
+sub platform_HiSeq4000 {
+  my $self = shift;
+  return $self->_flowcell_description() =~ /HiSeq\ 3000\/4000/xms;
+}
+
+=head2 platform_HiSeqX
+
+Method returns true if sequencing was performed on an Illumina
+instrument belonging to HiSeq X platform.
+
+=cut
+
+sub platform_HiSeqX {
+  my $self = shift;
+  return $self->_flowcell_description() =~ /HiSeq\ X/xms;
+}
+
+=head2 platform_MiniSeq
+
+Method returns true if sequencing was performed on an Illumina
+instrument belonging to MiniSeq platform.
+
+=cut
+
+sub platform_MiniSeq {
+  my $self = shift;
+  return $self->_run_params_version() =~ /MiniSeq/xms;
+}
+
+=head2 platform_MiSeq
+
+Method returns true if sequencing was performed on an Illumina
+instrument belonging to MiSeq platform.
+
+=cut
+
+sub platform_MiSeq {
+  my $self = shift;
+  return $self->_software_application_name() =~ /MiSeq/xms;
+}
+
+=head2 platform_NextSeq
+
+Method returns true if sequencing was performed on an Illumina
+instrument belonging to NextSeq platform.
+
+=cut
+
+sub platform_NextSeq {
+  my $self = shift;
+  return $self->_software_application_name() =~ /NextSeq/xms;
+}
+
+=head2 platform_NovaSeq
+
+Method returns true if sequencing was performed on an Illumina
+instrument belonging to NovaSeq platform.
+
+=cut
+
+sub platform_NovaSeq {
+  my $self = shift;
+  return $self->_software_application_name() =~ /NovaSeq/xms;
+}
+
+##use critic
+
+=head2 workflow_type
+
+=cut
+
+has q{workflow_type} => (
+  isa        => 'Str',
+  is         => 'ro',
+  lazy_build => 1,
+);
+sub _build_workflow_type {
+  my $self = shift;
+  return _get_single_element_text($self->_run_params(), 'WorkflowType');
+}
+
+=head2 all_lanes_mergeable
+
+Method returns true if all lanes on the flowcell contain the
+same library and the sequencing data are thus mergeable across
+all lanes.
+
+=cut
+
+sub all_lanes_mergeable {
+  my $self = shift;
+  return (
+    ($self->workflow_type() =~ /NovaSeqStandard/xms) # ie not NovaSeqXp
+     or $self->is_rapid_run() # In our practice Rapid Runs always had the same
+                              # library on both lanes.
+         );
+}
+
+=head2 is_rapid_run
+
+Method returns true if RapidRun mode was used.
+
+=cut
+
+sub is_rapid_run {
+  my $self = shift;
+  return $self->_run_mode() =~ /RapidRun/xms;
+}
+
+=head2 is_rapid_run_v1
+
+Method returns true if Rapid Run Chemistry v1 was used.
+
+=cut
+
+sub is_rapid_run_v1 {
+  my $self = shift;
+  return $self->_flowcell_description() =~ /Rapid\ Flow\ Cell\ v1/xms;
+}
+
+=head2 is_rapid_run_v2
+
+Method returns true if Rapid Run Chemistry v2 was used.
+
+=cut
+
+sub is_rapid_run_v2 {
+  my $self = shift;
+  return $self->_flowcell_description() =~ /Rapid\ Flow\ Cell\ v2/xms;
+}
+
+=head2 is_rapid_run_abovev2
+
+Method returns true if Rapid Run Chemistry higher than v2 was used.
+
+=cut
+
+sub is_rapid_run_abovev2 {
+  my $self = shift;
+  my ($version) = $self->_flowcell_description() =~ /Rapid\ Flow\ Cell\ v(\d)/xms;
+  return $version && ($version > 2);
+}
+
+=head2 is_i5opposite
+
+A dual-indexed sequencing run on the MiniSeq, NextSeq, HiSeq 4000, or HiSeq 3000
+performs the Index 2 Read after the Read 2 resynthesis step. This workflow
+requires a reverse complement of the Index 2 (i5) primer sequence compared to
+the primer sequence used on other Illumina platform, see
+https://support.illumina.com/content/dam/illumina-support/documents/documentation/system_documentation/miseq/indexed-sequencing-overview-guide-15057455-04.pdf
+
+Method returns true if this is the case.
+
+=cut
+
+sub is_i5opposite {
+  my $self = shift;
+  return ($self->platform_HiSeqX()  or $self->platform_HiSeq4000() or
+          $self->platform_MiniSeq() or $self->platform_NextSeq());
+}
+
+=head2 instrument_side
+
+Returns the instrument side (A or B) if available or an empty string.
+
+=cut
+
+sub instrument_side {
+  my $self = shift;
+  return _get_single_element_text($self->_run_params(), 'Side') ||
+    _get_single_element_text($self->_run_params(), 'FCPosition');
+}
+
+#########################################################
+#       Private attributes                              #
+#########################################################
+
+has q{_run_params} => (
+  is         => 'ro',
+  isa        => 'XML::LibXML::Document',
+  lazy_build => 1,
+);
+sub _build__run_params {
+  my $self = shift;
+  return $self->_get_xml_document(qr/[R|r]unParameters[.]xml/smx, $self->runfolder_path());
+}
+
+has q{_runinfo_document} => (
+  is         => 'ro',
+  isa        => 'XML::LibXML::Document',
+  lazy_build => 1,
+);
+sub _build__runinfo_document {
+  my $self = shift;
+
+  return $self->_get_xml_document(qr/RunInfo[.]xml/smx, $self->runfolder_path());
+};
+
+has q{_flowcell_description} => (
+  isa        => 'Str',
+  is         => 'ro',
+  lazy_build => 1,
+);
+sub _build__flowcell_description {
+  my $self = shift;
+  return _get_single_element_text($self->_run_params(), 'Flowcell');
+}
+
+has q{_software_application_name} => (
+  isa        => 'Str',
+  is         => 'ro',
+  lazy_build => 1,
+);
+sub _build__software_application_name {
+  my $self = shift;
+  return (_get_single_element_text($self->_run_params(), 'ApplicationName') or
+          _get_single_element_text($self->_run_params(), 'Application'));
+}
+
+has q{_run_params_version} => (
+  isa        => 'Str',
+  is         => 'ro',
+  lazy_build => 1,
+);
+sub _build__run_params_version {
+  my $self = shift;
+  return _get_single_element_text($self->_run_params(), 'RunParametersVersion');
+}
+
+has q{_run_mode} => (
+  isa        => 'Str',
+  is         => 'ro',
+  lazy_build => 1,
+);
+sub _build__run_mode {
+  my $self = shift;
+  return _get_single_element_text($self->_run_params(), 'RunMode');
+}
+
+has q{_runinfo_store} => (
+  is         => 'ro',
+  isa        => 'Bool',
+  lazy_build => 1,
+);
 sub _build__runinfo_store {
   my $self = shift;
 
-  my $runinfo = $self->_fetch_runinfo();
+  my $doc = $self->_runinfo_document;
 
-  #Now parse runinfo and record useful info...:
-  my $doc = XML::LibXML->new()->parse_string($runinfo);
-
-  my $formatversion=$doc->getElementsByTagName('RunInfo')->[0]->getAttribute('Version');
-  if(not defined $formatversion){
+  my $fcl_el = $doc->getElementsByTagName('FlowcellLayout')->[0];
+  if(not defined $fcl_el) {
     $self->_set_lane_count($doc->getElementsByTagName('Lane')->size);
     $self->_set_expected_cycle_count($doc->getElementsByTagName('Cycles')->[0]->getAttribute('Incorporation'));
 
@@ -282,8 +720,7 @@ sub _build__runinfo_store {
       $self->_set_values_at_end_of_read($rc);
     }
 
-  }elsif($formatversion == 2){
-    my $fcl_el = $doc->getElementsByTagName('FlowcellLayout')->[0];
+  }else{
     $self->_set_lane_count($fcl_el->getAttribute('LaneCount'));
     my $ncol = $fcl_el->getAttribute('SurfaceCount') * $fcl_el->getAttribute('SwathCount');
     my $nrow = $fcl_el->getAttribute('TileCount'); #informatic split on HiSeq
@@ -313,12 +750,79 @@ sub _build__runinfo_store {
       }
       $self->_set_values_at_end_of_read($rc);
     }
-
-  }else{
-    croak "unknown RunInfo.xml Version $formatversion";
   }
 
-  return $runinfo;
+  return 1; # So builder runs only once
+}
+
+has q{_tilelayout_store}  => (
+  is         => 'ro',
+  isa        => 'XML::LibXML::Document',
+  lazy_build => 1,
+  init_arg   => undef,
+);
+sub _build__tilelayout_store {
+  my $self = shift;
+
+  my $doc = $self->_get_xml_document( qr/TileLayout[.]xml/xms,
+                File::Spec->catdir($self->runfolder_path(), 'Config'));
+
+  my $tl_element = $doc->getElementsByTagName('TileLayout')->[0];
+
+  $self->_set_tilelayout_columns($tl_element->getAttribute('Columns'));
+  $self->_set_tilelayout_rows($tl_element->getAttribute('Rows'));
+
+  return $doc;
+}
+
+has q{_data_intensities_config_xml_object} => (
+  is         => q{ro},
+  isa        => q{XML::LibXML::Document},
+  lazy_build => 1,
+);
+sub _build__data_intensities_config_xml_object {
+  my $self = shift;
+  return $self->_get_xml_document( qr/config[.]xml/xms,
+                File::Spec->catdir($self->runfolder_path(), qw(Data Intensities)));
+}
+
+#########################################################
+#       Private methods                                 #
+#########################################################
+
+sub _get_xml_document {
+  my ($self, $reg_expr, $dir) = @_;
+
+  if (!$reg_expr) {
+    croak 'Regular expression for name required';
+  }
+  if (!$dir) {
+    croak 'Directory path required';
+  }
+
+  my @files = grep { m/\/$reg_expr\Z/xms } io($dir)->all;
+  if (@files < 1) {
+    croak qq{File not found for $reg_expr in $dir};
+  }
+  if (@files > 1) {
+    croak 'Multiple files found: ' . join q(,) , @files;
+  }
+
+  return XML::LibXML->load_xml(location => $files[0]);
+}
+
+sub _get_single_element_text {
+  my ($doc, $tag_name) = @_;
+  my $nl = $doc->getElementsByTagName($tag_name);
+  my $list_size = $nl->size();
+  if ($list_size > 1) {
+    croak qq{Multiple $tag_name tags};
+  }
+  my $text = q[];
+  if ($list_size == 1) {
+    $text = $nl->pop()->textContent() // q[];
+  }
+  return $text;
 }
 
 sub _set_values_at_end_of_read {
@@ -332,11 +836,11 @@ sub _set_values_at_end_of_read {
       $self->_push_reads_indexed(1);
       if ( $self->has_indexing_cycle_range ) {
         my ($start,$end) = $self->indexing_cycle_range;
-        if ( $end != $rc->{start} + 1 ) {
+        if ( $rc->{start} == $end + 1 ) {
           $self->_pop_indexing_cycle_range();
           $self->_push_indexing_cycle_range( $rc->{index} );
         } else {
-          carp "Don't know how to deal with no adjacent indexing reads: $start,$end and $rc->{start},$rc->{index}"
+          carp "Don't know how to deal with non adjacent indexing reads: $start,$end and $rc->{start},$rc->{index}"
         }
       } else {
         $self->_push_indexing_cycle_range( $rc->{start},$rc->{index} );
@@ -360,373 +864,6 @@ sub _set_values_at_end_of_read {
   return;
 }
 
-=head2 lane_count
-
-Number of lanes configured for this run. May be set on Construction.
-
-  my $iLaneCount = $self->lane_count();
-
-=cut
-
-has lane_count => (
-  is => 'ro',
-  isa => 'Int',
-  writer => '_set_lane_count',
-  predicate => 'has_lane_count',
-  documentation => q{The number of lanes on this run},
-);
-
-
-=head2 read_cycle_counts
-
-List of cycle lengths configured for each read/index in order.
-
-=cut
-
-has _read_cycle_counts => (
-  traits => ['Array'],
-  is => 'ro',
-  isa => 'ArrayRef[Int]',
-  default   => sub { [] },
-  handles  => {
-    _push_read_cycle_counts => 'push',
-    read_cycle_counts => 'elements',
-    has_read_cycle_counts => 'count',
-  },
-  #look at before loop lower down
-);
-
-=head2 reads_indexed
-
-List of booleans for each read indicating a multiplex index.
-
-=cut
-
-has _reads_indexed => (
-  traits => ['Array'],
-  is => 'ro',
-  isa => 'ArrayRef[Bool]',
-  default   => sub { [] },
-  handles  => {
-    _push_reads_indexed => 'push',
-    reads_indexed => 'elements',
-    has_reads_indexed => 'count',
-  },
-);
-
-
-
-=head2 indexing_cycle_range
-
-First and last indexing cycles, or nothing returned if not indexed
-
-=cut
-
-has _indexing_cycle_range => (
-  traits => ['Array'],
-  is => 'ro',
-  isa => 'ArrayRef[Int]',
-  default   => sub { [] },
-  handles  => {
-    _pop_indexing_cycle_range => 'pop',
-    _push_indexing_cycle_range => 'push',
-    indexing_cycle_range => 'elements',
-    has_indexing_cycle_range => 'count',
-  },
-  #look at before loop lower down
-);
-
-
-=head2 read1_cycle_range
-
-First and last cycles of read 1
-
-=cut
-
-has _read1_cycle_range => (
-  traits => ['Array'],
-  is => 'ro',
-  isa => 'ArrayRef[Int]',
-  default   => sub { [] },
-  handles  => {
-    _push_read1_cycle_range => 'push',
-    read1_cycle_range => 'elements',
-    has_read1_cycle_range => 'count',
-  },
-  #look at before loop lower down
-);
-
-
-=head2 read2_cycle_range
-
-First and last cycles of read 2, or nothing returned if no read 2
-
-=cut
-
-has _read2_cycle_range => (
-  traits => ['Array'],
-  is => 'ro',
-  isa => 'ArrayRef[Int]',
-  default   => sub { [] },
-  handles  => {
-    _push_read2_cycle_range => 'push',
-    read2_cycle_range => 'elements',
-    has_read2_cycle_range => 'count',
-  },
-  #look at before loop lower down
-);
-
-
-=head2 expected_cycle_count
-
-Number of cycles configured for this run and for which the output data (images or intensities or both) can be expected to be found below this folder. This number is extracted from the recipe file. It does not include the cycles for the paired read if that is performed as a separate run - the output data for that will be in a different runfolder.
-May be set on construction.
-
-  $iExpectedCycleCount = $self->expected_cycle_count();
-
-=cut
-
-has expected_cycle_count => (
-  is => 'ro',
-  isa => 'Int',
-#  predicate => 'has_expected_cycle_count',
-  lazy_build => 1,
-  writer => '_set_expected_cycle_count',
-);
-
-sub _build_expected_cycle_count {
-  my $self = shift;
-  return sum $self->read_cycle_counts;
-}
-
-=head2 cycle_count
-
-synonym for expected_cycle_count. May not be set on construction. Best to use expected_cycle_count.
-
-=cut
-
-sub cycle_count {
-  my $self = shift;
-  return $self->expected_cycle_count();
-}
-
-#loop for extracting cycle info from recipe or runinfo
-
-foreach my $f (qw(expected_cycle_count lane_count read_cycle_counts indexing_cycle_range read1_cycle_range read2_cycle_range)){
-  before $f => sub{
-    my $self=shift;
-    my $hf = "has_$f";
-    if(not $self->$hf){
-      try {
-        $self->runinfo;
-      } catch {
-        $self->recipe;
-      };
-    }
-  };
-}
-
-=head2 tilelayout
-
-XML from the Config/TileLayout.xml file.
-
-=cut
-
-sub tilelayout {
-  my ($self) = @_;
-  return $self->_tilelayout_store();
-}
-
-has _tilelayout_store  => (
-  is => 'ro',
-  isa => 'Str',
-  lazy_build => 1,
-  init_arg => undef,
-);
-
-
-sub _build__tilelayout_store {
-  my $self = shift;
-
-  my $tilelayout = io( join q(/),$self->runfolder_path,'Config','TileLayout.xml' )->slurp ;
-  #Now parse file and record useful info...:
-  my $doc = XML::LibXML->new()->parse_string($tilelayout);
-  my $tl_element = $doc->getElementsByTagName('TileLayout')->[0];
-
-  $self->_set_tilelayout_columns($tl_element->getAttribute('Columns'));
-  $self->_set_tilelayout_rows($tl_element->getAttribute('Rows'));
-
-  return $tilelayout;
-}
-
-=head2 tilelayout_columns
-
-The number of tile columns in a lane. May be set on construction.
-
-  my $iTilelayoutColumns = $class->tilelayout_columns();
-
-=cut
-
-has tilelayout_columns => (
-  is => 'ro',
-  isa => 'Int',
-  writer => '_set_tilelayout_columns',
-  predicate => 'has_tilelayout_columns',
-  documentation => q{The number of tile columns in a lane},
-);
-
-=head2 tilelayout_rows
-
-The number of tile rows in a lane. May be set on construction.
-
-  my $iTilelayoutRows = $class->tilelayout_rows();
-
-=cut
-
-has tilelayout_rows => (
-  is => 'ro',
-  isa => 'Int',
-  writer => '_set_tilelayout_rows',
-  predicate => 'has_tilelayout_rows',
-  documentation => q{The number of tile rows in a lane},
-);
-
-#loop for extracting tile info from tilelayout or runinfo
-
-foreach my $f (qw(tilelayout_rows tilelayout_columns)){
-  before $f => sub{
-    my $self=shift;
-    my $hf = "has_$f";
-    if(not $self->$hf){
-      try {
-        $self->runinfo;
-      };
-      if(not $self->$hf) {
-        $self->tilelayout;
-      };
-    }
-  };
-}
-
-
-=head2 tile_count
-
-=cut
-
-has q{tile_count} => (
-  isa => q{Int},
-  is => q{ro},
-  lazy_build => 1,
-  writer => '_set_tile_count',
-  documentation => q{Number of tiles in a lane},
-);
-
-sub _build_tile_count {
-  my ($self) = @_;
-  my $tcount;
-  try {
-#    $self->data_intensities_config;
-#    $tcount = $self->tile_count;
-    my $lane_el = $self->data_intensities_config_xml_object()->getElementsByTagName('Lane')->[0];
-    $tcount = $lane_el->getElementsByTagName('Tile')->size();
-  } catch {
-    $tcount = $self->tilelayout_rows() * $self->tilelayout_columns();
-  };
-  return $tcount;
-}
-
-=head2 data_intensities_config
-
-The string contents of the Data/Intensities/config.xml file
-
-=cut
-
-has data_intensities_config => (
-  is => 'ro',
-  isa => 'Str',
-  lazy_build => 1,
-);
-
-sub _build_data_intensities_config {
-  my ($self) = @_;
-  my $c = io( join q(/), $self->runfolder_path, qw(Data Intensities config.xml) )->slurp ;
-#  my $doc = XML::LibXML->new()->parse_string($c);
-#  $self->_set_tile_count($doc->getElementsByTagName('Lane')->[0]->getElementsByTagName('Tile')->size());
-  return $c;
-}
-
-=head2 data_intensities_config_xml_object
-
-The data intensities config.xml as an XML::LibXML::Document object
-
-=cut
-
-has data_intensities_config_xml_object => (
-  is => q{ro},
-  isa => q{XML::LibXML::Document},
-  lazy_build => 1,
-);
-
-sub _build_data_intensities_config_xml_object {
-  my ($self) = @_;
-  return XML::LibXML->new()->parse_string( $self->data_intensities_config() );
-}
-
-=head2 is_rta
-
-Is there evidence for Illumina RTA having been run in this folder (useful as it implies single runfolder for paired reads).
-This may be set on construction.
-
-  my $bIsRTA => $class->is_rta();
-
-=cut
-
-has is_rta => (
-  is => 'ro',
-  isa => 'Bool',
-  lazy_build => 1,
-  documentation => q{This run is an Illumina RTA run},
-);
-
-sub _build_is_rta {
-  my $self = shift;
-  return io(join q(/),$self->runfolder_path, qw(Data Intensities) )->exists;
-}
-
-=head2 lane_tile_clustercount
-
-utilises the Data/Intensities/config.xml to generate a hashref of
-
-  {lanes}->{tiles} = clustercount_value
-
-On initialisation, the clustercount may not be available, so it will be left as undef, so this can be used
-as a reference to the tile 'names' expected to be found on each lane
-
-=cut
-
-has q{lane_tile_clustercount} => (
-  isa => q{HashRef},
-  is  => q{ro},
-  lazy_build => 1,
-);
-
-sub _build_lane_tile_clustercount {
-  my ( $self ) = @_;
-
-  my $run_el = ( $self->data_intensities_config_xml_object()->getElementsByTagName( 'Run' ) )[0];
-
-  my $lane_tile_clustercount = {};
-  for my $lane_el ( ( $run_el->getChildrenByTagName( 'TileSelection' ) )[0]->getChildrenByTagName( 'Lane' ) ) {
-    my $lane = $lane_el->getAttribute( 'Index' );
-    for my $tile_el ( $lane_el->getChildrenByTagName( 'Tile' ) ){
-      $lane_tile_clustercount->{ $lane }->{ $tile_el->textContent } = undef;
-    }
-  }
-
-  return $lane_tile_clustercount;
-}
-
-
 1;
 __END__
 
@@ -740,17 +877,17 @@ __END__
 
 =item Moose::Role
 
-=item Moose::Util::TypeConstraints
-=item MooseX::AttributeHelpers
-
-=item strict
-=item warnings
 =item Carp
-=item English qw{-no_match_vars}
 
-=item List::Util qw(first sum)
+=item List::Util
+
+=item List::MoreUtils
+
 =item IO::All
+
 =item XML::LibXML
+
+=item Try::Tiny
 
 =back
 
@@ -760,11 +897,17 @@ __END__
 
 =head1 AUTHOR
 
-Andy Brown
+=over
+
+=item Andy Brown
+
+=item Marina Gourtovaia
+
+=back
 
 =head1 LICENSE AND COPYRIGHT
 
-Copyright (C) 2009 GRL by Andy Brown (ajb@sanger.ac.uk)
+Copyright (C) 2018 by GRL
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
